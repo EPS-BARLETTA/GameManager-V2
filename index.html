@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>EPS Tournoi</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="style.css" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com; img-src 'self' data:;">
+    <link rel="icon" href="data:,">
+  </head>
+  <body>
+    <div class="app-shell">
+      <section class="view active" id="view-home" data-view="home">
+        <header class="hero-card">
+          <p class="hero-kicker">EPS Tournoi</p>
+          <h1>EPS Tournoi</h1>
+          <p>Sports collectifs · Raquettes</p>
+        </header>
+        <div class="home-actions">
+          <button class="btn btn-primary btn-xl" id="startNewTournamentBtn" type="button">▶ Nouveau tournoi</button>
+          <button class="btn btn-secondary btn-lg" id="resumeSessionBtn" type="button">↩ Reprendre une séance</button>
+          <button class="btn btn-secondary btn-lg hidden" id="lastStatsBtn" type="button">📊 Dernière séance : Stats</button>
+        </div>
+      </section>
+
+      <section class="view" id="view-new" data-view="new">
+        <header class="view-header">
+          <div>
+            <p class="section-kicker">Nouvelle séance</p>
+            <h2>Nouveau tournoi</h2>
+            <p>Préparez la séance et lancez le tournoi.</p>
+          </div>
+          <button class="btn btn-secondary btn-sm" type="button" data-view-target="home">Accueil</button>
+        </header>
+
+        <form class="panel-stack" id="newTournamentForm">
+          <section class="panel-card">
+            <div class="panel-head">
+              <h3>Type de sport</h3>
+            </div>
+            <div class="choice-row two-cols" id="sportChoiceRow">
+              <button class="choice-card selected" type="button" data-sport="sport-co">⚽ Sports collectifs</button>
+              <button class="choice-card" type="button" data-sport="raquette">🏸 Raquettes</button>
+            </div>
+          </section>
+
+          <section class="panel-card">
+            <div class="panel-head">
+              <h3>Format de tournoi</h3>
+            </div>
+            <div class="format-grid" id="formatCards"></div>
+          </section>
+
+          <section class="panel-card">
+            <div class="panel-head">
+              <h3>Participants</h3>
+            </div>
+            <div class="stepper-row">
+              <button class="stepper-btn" id="participantMinusBtn" type="button" aria-label="Retirer des élèves">−</button>
+              <label class="stepper-display">
+                <input id="participantCountInput" type="number" min="4" max="48" value="24" />
+                <span id="participantCountLabel">24</span>
+              </label>
+              <button class="stepper-btn" id="participantPlusBtn" type="button" aria-label="Ajouter des élèves">+</button>
+            </div>
+            <div class="suggestion-list" id="configSuggestions"></div>
+
+            <div class="panel-subsection hidden" id="teamNamesSection">
+              <div class="panel-head compact">
+                <h4>Noms des équipes</h4>
+                <p>Laissez vide pour garder les noms proposés.</p>
+              </div>
+              <div class="name-grid" id="teamNamesGrid"></div>
+            </div>
+
+            <div class="panel-subsection hidden" id="studentNamesSection">
+              <div class="panel-head compact">
+                <h4>Noms des élèves</h4>
+                <p>Un nom par ligne. Optionnel.</p>
+              </div>
+              <label class="field">
+                <textarea id="studentNamesInput" rows="7" placeholder="Nom Prénom&#10;Nom Prénom&#10;Nom Prénom"></textarea>
+              </label>
+            </div>
+          </section>
+
+          <section class="panel-card">
+            <div class="panel-head">
+              <h3>Terrains et temps</h3>
+            </div>
+
+            <div class="inline-block">
+              <span class="field-label">Terrains</span>
+              <div class="stepper-row compact">
+                <button class="stepper-btn" id="fieldMinusBtn" type="button" aria-label="Retirer un terrain">−</button>
+                <label class="stepper-display">
+                  <input id="fieldCountInput" type="number" min="1" max="20" value="2" />
+                  <span id="fieldCountLabel">2</span>
+                </label>
+                <button class="stepper-btn" id="fieldPlusBtn" type="button" aria-label="Ajouter un terrain">+</button>
+              </div>
+            </div>
+
+            <div class="time-grid">
+              <label class="field">
+                <span>Début</span>
+                <input id="startTimeInput" type="time" value="10:00" />
+              </label>
+              <label class="field">
+                <span>Fin</span>
+                <input id="endTimeInput" type="time" value="11:00" />
+              </label>
+            </div>
+
+            <div class="timing-summary" id="timingSummary"></div>
+
+            <div class="inline-block">
+              <span class="field-label">Durée d'un match</span>
+              <div class="stepper-row compact">
+                <button class="stepper-btn" id="durationMinusBtn" type="button" aria-label="Réduire la durée">−</button>
+                <label class="stepper-display">
+                  <input id="matchDurationInput" type="number" min="1" max="60" value="7" />
+                  <span id="matchDurationLabel">7 min</span>
+                </label>
+                <button class="stepper-btn" id="durationPlusBtn" type="button" aria-label="Augmenter la durée">+</button>
+              </div>
+            </div>
+          </section>
+
+          <details class="panel-card options-panel">
+            <summary>▼ Options</summary>
+            <div class="options-grid">
+              <label class="toggle-row">
+                <input id="rotatingRefereeInput" type="checkbox" />
+                <span>Arbitre tournant</span>
+              </label>
+              <label class="toggle-row">
+                <input id="scoreTableInput" type="checkbox" />
+                <span>Table de marque</span>
+              </label>
+              <label class="field">
+                <span>Nom de la séance</span>
+                <input id="sessionNameInput" type="text" placeholder="Classe 5e A - Badminton" />
+              </label>
+            </div>
+          </details>
+
+          <button class="btn btn-primary btn-launch" id="launchTournamentBtn" type="submit">▶ Lancer le tournoi</button>
+        </form>
+      </section>
+
+      <section class="view" id="view-sessions" data-view="sessions">
+        <header class="view-header">
+          <div>
+            <p class="section-kicker">Sauvegardes</p>
+            <h2>Mes séances</h2>
+            <p>Retrouvez les séances enregistrées localement.</p>
+          </div>
+          <button class="btn btn-secondary btn-sm" type="button" data-view-target="home">Accueil</button>
+        </header>
+        <div class="session-list" id="sessionsList"></div>
+        <div class="footer-actions">
+          <button class="btn btn-secondary btn-lg" id="exportAllSessionsBtn" type="button">Exporter tout en JSON</button>
+        </div>
+      </section>
+
+      <section class="view" id="view-live" data-view="live">
+        <header class="live-header">
+          <div>
+            <p class="section-kicker" id="liveModeLabel">Tournoi en cours</p>
+            <h2 id="liveSessionTitle">Séance</h2>
+            <p id="liveRotationLabel">Rotation 1 / 1</p>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center;">
+            <button class="btn btn-secondary btn-sm floating-ranking-btn" id="openRankingBtn" type="button">📊</button>
+            <button class="btn btn-secondary btn-sm" id="liveHomeBtn" type="button">🏠 Accueil</button>
+          </div>
+        </header>
+
+        <section class="timer-card">
+          <div class="timer-topline">
+            <span id="timerLabel">⏱ 07:00</span>
+            <span id="timerStatus">Prêt</span>
+          </div>
+          <div class="progress-track">
+            <div class="progress-bar" id="timerProgressBar"></div>
+          </div>
+          <div class="timer-actions">
+            <button class="btn btn-secondary btn-sm" id="timerStartBtn" type="button">▶</button>
+            <button class="btn btn-secondary btn-sm" id="timerPauseBtn" type="button">⏸</button>
+            <button class="btn btn-secondary btn-sm" id="timerResetBtn" type="button">↺ Reset</button>
+          </div>
+        </section>
+
+        <div class="ranking-drawer hidden" id="rankingDrawer">
+          <div class="ranking-drawer-head">
+            <h3>Classement provisoire</h3>
+            <button class="btn btn-secondary btn-sm" id="closeRankingBtn" type="button">Fermer</button>
+          </div>
+          <div id="liveRankingContent"></div>
+        </div>
+
+        <div class="live-match-grid" id="liveMatches"></div>
+
+        <div class="footer-actions split">
+          <button class="btn btn-secondary btn-lg" id="prevRotationBtn" type="button">← Rotation précédente</button>
+          <button class="btn btn-secondary btn-lg" id="saveSessionBtn" type="button">💾 Sauvegarder</button>
+          <button class="btn btn-primary btn-lg" id="nextRotationBtn" type="button">Rotation suivante →</button>
+        </div>
+        <div style="margin-top:12px;">
+          <button class="btn btn-secondary btn-lg" id="finishTournamentBtn" type="button" style="width:100%;background:#fee2e2;color:#991b1b;">🏁 Terminer le tournoi</button>
+        </div>
+      </section>
+
+      <section class="view" id="view-summary" data-view="summary">
+        <header class="view-header">
+          <div>
+            <p class="section-kicker">Fin de séance</p>
+            <h2 id="summaryTitle">Statistiques</h2>
+            <p id="summarySubtitle">Classement final et détail de la séance.</p>
+          </div>
+          <button class="btn btn-secondary btn-sm" type="button" data-view-target="home">Accueil</button>
+        </header>
+        <div class="panel-stack" id="summaryContent"></div>
+        <div class="footer-actions wrap">
+          <button class="btn btn-secondary btn-lg" id="printSummaryBtn" type="button">🖨️ Imprimer le classement</button>
+          <button class="btn btn-secondary btn-lg" id="saveSummaryBtn" type="button">💾 Sauvegarder la séance</button>
+          <button class="btn btn-primary btn-lg" id="exportCsvBtn" type="button">↗️ Exporter CSV</button>
+        </div>
+      </section>
+    </div>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>
