@@ -146,6 +146,18 @@
                 <input id="sessionNameInput" type="text" placeholder="Classe 5e A - Badminton" />
               </label>
             </div>
+            <div class="inline-block" id="challengeRangeBlock" style="display:none;">
+              <span class="field-label">Plage de défi (±N rangs)</span>
+              <div class="stepper-row compact">
+                <button class="stepper-btn" id="challengeRangeMinusBtn" type="button" aria-label="Réduire la plage">−</button>
+                <label class="stepper-display">
+                  <input id="challengeRangeInput" type="number" min="1" max="10" value="5" />
+                  <span id="challengeRangeLabel">±5</span>
+                </label>
+                <button class="stepper-btn" id="challengeRangePlusBtn" type="button" aria-label="Augmenter la plage">+</button>
+              </div>
+              <p style="color:var(--text-soft);font-size:0.88rem;margin-top:8px;">Un joueur peut défier quelqu'un dans cette fourchette au-dessus de lui dans le classement.</p>
+            </div>
           </details>
 
           <button class="btn btn-primary btn-launch" id="launchTournamentBtn" type="submit">▶ Lancer le tournoi</button>

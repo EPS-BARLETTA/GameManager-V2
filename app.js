@@ -1714,9 +1714,8 @@ function renderLiveMatches(session) {
 function renderChallengeLive(session) {
   dom.liveModeLabel.textContent = 'Défi';
   dom.liveSessionTitle.textContent = session.name;
-  dom.liveRotationLabel.textContent = `${session.challengeLog?.length || 0} défi${(session.challengeLog?.length || 0) > 1 ? 's' : ''} joué${(session.challengeLog?.length || 0) > 1 ? 's' : ''}`;
-
-  const order = session.challengeOrder || session.schedule.teams.map(t => t.name);
+  const logCount = session.challengeLog?.length || 0;
+  dom.liveRotationLabel.textContent = `${logCount} défi${logCount > 1 ? 's' : ''} joué${logCount > 1 ? 's' : ''}`;
 
   dom.timerStatus.textContent = 'Libre';
   dom.timerLabel.textContent = '⏱ —';
@@ -1728,15 +1727,20 @@ function renderChallengeLive(session) {
   dom.nextRotationBtn.textContent = '🏁 Terminer';
   dom.nextRotationBtn.onclick = () => { finishTournament(); };
 
+  const challengeRange = session.options.challengeRange || 5;
+  const order = session.challengeOrder || session.schedule.teams.map(t => t.name);
+
   dom.liveMatches.innerHTML = `
     <div class="challenge-board">
-      <p style="color:var(--text-soft);margin-bottom:12px;">Tape sur un joueur pour voir qui il peut défier.</p>
+      <p id="challengeHint" style="color:var(--text-soft);margin-bottom:12px;min-height:1.4em;transition:color 0.2s;">
+        Tape sur un joueur pour voir contre qui il peut jouer.
+      </p>
       <div class="challenge-list" id="challengeList">
         ${order.map((name, idx) => `
           <button class="challenge-row" type="button" data-challenge-index="${idx}">
             <span class="challenge-rank">${idx + 1}</span>
-            <span class="challenge-name">${escapeHtml(name)}</span>
-            <span class="challenge-action">⚔️ Défier</span>
+            <span class="challenge-name">${escapeHtml(formatDisplayName(name))}</span>
+            <span class="challenge-action">${idx === 0 ? '' : '⚔️'}</span>
           </button>
         `).join('')}
       </div>
@@ -1745,9 +1749,7 @@ function renderChallengeLive(session) {
       <div class="challenge-modal-inner">
         <h3 id="challengerTitle"></h3>
         <p id="challengeTargetLabel"></p>
-        <div class="challenge-targets" id="challengeTargets"></div>
         <div class="challenge-score-form hidden" id="challengeScoreForm">
-          <p id="challengeScoreLabel"></p>
           <div class="score-row" style="max-width:320px;margin:0 auto">
             <div class="score-name" id="challengeHomeName"></div>
             <button class="score-btn" type="button" id="challengeHomeMin">−</button>
@@ -1772,50 +1774,41 @@ function renderChallengeLive(session) {
     </div>
   `;
 
-  const challengeListEl = document.getElementById('challengeList');
-  if (challengeListEl._challengeHandler) {
-    challengeListEl.removeEventListener('click', challengeListEl._challengeHandler);
-  }
-  const challengeHandler = e => {
-    const btn = e.target.closest('[data-challenge-index]');
-    if (!btn) return;
-    const challengerIdx = Number(btn.dataset.challengeIndex);
-    const order = session.challengeOrder;
-    const challengerName = order[challengerIdx];
-    const range = 5;
-    const targets = [];
-    for (let i = Math.max(0, challengerIdx - range); i < challengerIdx; i++) {
-      targets.push({ name: order[i], rank: i + 1, targetIdx: i });
-    }
-    if (targets.length === 0) return;
+  let highlightTimeout = null;
+  let selectedChallengerIdx = null;
 
+  function clearHighlight() {
+    if (highlightTimeout) { clearTimeout(highlightTimeout); highlightTimeout = null; }
+    selectedChallengerIdx = null;
+    document.querySelectorAll('#challengeList .challenge-row').forEach(btn => {
+      btn.classList.remove('challenge-selected', 'challenge-target', 'challenge-dimmed');
+    });
+    const hint = document.getElementById('challengeHint');
+    if (hint) {
+      hint.textContent = 'Tape sur un joueur pour voir contre qui il peut jouer.';
+      hint.style.color = 'var(--text-soft)';
+    }
+  }
+
+  function openScoreModal(challengerIdx, targetIdx) {
+    clearHighlight();
+    const currentOrder = session.challengeOrder;
+    const challengerName = currentOrder[challengerIdx];
+    const targetName = currentOrder[targetIdx];
     const modal = document.getElementById('challengeModal');
     const scoreForm = document.getElementById('challengeScoreForm');
-    document.getElementById('challengerTitle').textContent = `${challengerName} (rang ${challengerIdx + 1})`;
-    document.getElementById('challengeTargetLabel').textContent = 'Choisissez l\'adversaire :';
-    document.getElementById('challengeTargets').innerHTML = targets.map(t => `
-      <button class="choice-card" type="button" data-target-idx="${t.targetIdx}">${t.rank}. ${escapeHtml(t.name)}</button>
-    `).join('');
-    scoreForm.classList.add('hidden');
+    document.getElementById('challengerTitle').textContent =
+      `${formatDisplayName(challengerName)} (rang ${challengerIdx + 1})`;
+    document.getElementById('challengeTargetLabel').textContent =
+      `contre ${formatDisplayName(targetName)} (rang ${targetIdx + 1})`;
+    document.getElementById('challengeHomeName').textContent = formatDisplayName(targetName);
+    document.getElementById('challengeAwayName').textContent = formatDisplayName(challengerName);
+    document.getElementById('challengeHomeVal').textContent = '0';
+    document.getElementById('challengeAwayVal').textContent = '0';
+    scoreForm.classList.remove('hidden');
     modal.classList.remove('hidden');
 
-    let selectedTargetIdx = null;
     let scores = { home: 0, away: 0 };
-
-    document.getElementById('challengeTargets').addEventListener('click', ev => {
-      const targetBtn = ev.target.closest('[data-target-idx]');
-      if (!targetBtn) return;
-      selectedTargetIdx = Number(targetBtn.dataset.targetIdx);
-      document.querySelectorAll('#challengeTargets .choice-card').forEach(b => b.classList.remove('selected'));
-      targetBtn.classList.add('selected');
-      scores = { home: 0, away: 0 };
-      document.getElementById('challengeHomeName').textContent = order[selectedTargetIdx];
-      document.getElementById('challengeAwayName').textContent = challengerName;
-      document.getElementById('challengeHomeVal').textContent = '0';
-      document.getElementById('challengeAwayVal').textContent = '0';
-      scoreForm.classList.remove('hidden');
-    }, { once: true });
-
     const updateVal = (side, step) => {
       scores[side] = Math.max(0, (scores[side] || 0) + step);
       document.getElementById(`challenge${side === 'home' ? 'Home' : 'Away'}Val`).textContent = scores[side];
@@ -1826,23 +1819,22 @@ function renderChallengeLive(session) {
     document.getElementById('challengeAwayPlus').onclick = () => updateVal('away', 1);
 
     document.getElementById('challengeConfirmBtn').onclick = () => {
-      if (selectedTargetIdx === null) return;
-      const order = session.challengeOrder;
+      const co = session.challengeOrder;
       const challengerWon = scores.away > scores.home;
       session.challengeLog.push({
         challenger: challengerName,
-        target: order[selectedTargetIdx],
+        target: targetName,
         challengerRank: challengerIdx + 1,
-        targetRank: selectedTargetIdx + 1,
+        targetRank: targetIdx + 1,
         challengerScore: scores.away,
         targetScore: scores.home,
         challengerWon,
         ts: Date.now(),
       });
       if (challengerWon) {
-        const newOrder = [...order];
-        newOrder[selectedTargetIdx] = challengerName;
-        newOrder[challengerIdx] = order[selectedTargetIdx];
+        const newOrder = [...co];
+        newOrder[targetIdx] = challengerName;
+        newOrder[challengerIdx] = targetName;
         session.challengeOrder = newOrder;
       }
       modal.classList.add('hidden');
@@ -1853,9 +1845,62 @@ function renderChallengeLive(session) {
     document.getElementById('challengeCancelBtn').onclick = () => {
       modal.classList.add('hidden');
     };
-  };
-  challengeListEl._challengeHandler = challengeHandler;
-  challengeListEl.addEventListener('click', challengeHandler);
+  }
+
+  const challengeListEl = document.getElementById('challengeList');
+  challengeListEl.addEventListener('click', e => {
+    const btn = e.target.closest('[data-challenge-index]');
+    if (!btn) return;
+    const clickedIdx = Number(btn.dataset.challengeIndex);
+
+    if (btn.classList.contains('challenge-target') && selectedChallengerIdx !== null) {
+      openScoreModal(selectedChallengerIdx, clickedIdx);
+      return;
+    }
+
+    if (selectedChallengerIdx !== null) {
+      clearHighlight();
+      return;
+    }
+
+    if (clickedIdx === 0) {
+      const hint = document.getElementById('challengeHint');
+      if (hint) {
+        hint.textContent = `${formatDisplayName(order[0])} est en tête — personne à défier.`;
+        hint.style.color = 'var(--text-soft)';
+      }
+      setTimeout(() => {
+        const h = document.getElementById('challengeHint');
+        if (h) { h.textContent = 'Tape sur un joueur pour voir contre qui il peut jouer.'; h.style.color = 'var(--text-soft)'; }
+      }, 2000);
+      return;
+    }
+
+    selectedChallengerIdx = clickedIdx;
+    const minTarget = Math.max(0, clickedIdx - challengeRange);
+    const maxTarget = clickedIdx - 1;
+
+    document.querySelectorAll('#challengeList .challenge-row').forEach((rowBtn, idx) => {
+      rowBtn.classList.remove('challenge-selected', 'challenge-target', 'challenge-dimmed');
+      if (idx === clickedIdx) {
+        rowBtn.classList.add('challenge-selected');
+      } else if (idx >= minTarget && idx <= maxTarget) {
+        rowBtn.classList.add('challenge-target');
+      } else {
+        rowBtn.classList.add('challenge-dimmed');
+      }
+    });
+
+    const hint = document.getElementById('challengeHint');
+    if (hint) {
+      hint.textContent = `${formatDisplayName(order[clickedIdx])} — tape sur un adversaire en orange. Retour automatique dans 3 s.`;
+      hint.style.color = 'var(--accent-dark)';
+    }
+
+    highlightTimeout = setTimeout(() => {
+      clearHighlight();
+    }, 3000);
+  });
 }
 
 function renderLiveView() {
@@ -2038,7 +2083,7 @@ function renderStandingsTable(session, standings) {
           ${standings.map((row, index) => `
             <tr>
               <td>${index + 1}</td>
-              <td>${escapeHtml(formatDisplayName(row.name))}</td>
+              <td>${escapeHtml(isTeamMode ? row.name : formatDisplayName(row.name))}</td>
               <td>${row.wins}</td>
               <td>${row.draws}</td>
               <td>${row.losses}</td>
@@ -2057,7 +2102,7 @@ function renderSummaryStats(session, standings) {
   const isTeamMode = session.sport === 'sport-co' && session.format !== 'rotating-teams';
   return standings.map(row => `
     <article class="stat-row">
-      <strong>${escapeHtml(formatDisplayName(row.name))}</strong>
+      <strong>${escapeHtml(isTeamMode ? row.name : formatDisplayName(row.name))}</strong>
       <span>${row.wins}V ${row.draws}N ${row.losses}D · ${row.points} pts · ${row.pointsFor}/${row.pointsAgainst}</span>
       ${isTeamMode ? `<span>Différence : ${row.goalDiff}</span>` : `<span>Ratio : ${(row.ratio || 0).toFixed(2)}</span>`}
       ${session.format === 'challenge' && row.challengesMade !== undefined
@@ -2416,6 +2461,20 @@ function handleStepperButtons() {
     renderTimeSection();
     persistState();
   });
+  if (dom.challengeRangeMinusBtn) {
+    dom.challengeRangeMinusBtn.addEventListener('click', () => {
+      state.draft.challengeRange = clampNumber((state.draft.challengeRange || 5) - 1, 1, 10, 5);
+      if (dom.challengeRangeLabel) dom.challengeRangeLabel.textContent = `±${state.draft.challengeRange}`;
+      if (dom.challengeRangeInput) dom.challengeRangeInput.value = state.draft.challengeRange;
+      persistState();
+    });
+    dom.challengeRangePlusBtn.addEventListener('click', () => {
+      state.draft.challengeRange = clampNumber((state.draft.challengeRange || 5) + 1, 1, 10, 5);
+      if (dom.challengeRangeLabel) dom.challengeRangeLabel.textContent = `±${state.draft.challengeRange}`;
+      if (dom.challengeRangeInput) dom.challengeRangeInput.value = state.draft.challengeRange;
+      persistState();
+    });
+  }
 }
 
 /* === Initialisation === */
@@ -2476,6 +2535,11 @@ function cacheDom() {
   dom.printSummaryBtn = document.getElementById('printSummaryBtn');
   dom.saveSummaryBtn = document.getElementById('saveSummaryBtn');
   dom.exportCsvBtn = document.getElementById('exportCsvBtn');
+  dom.challengeRangeBlock = document.getElementById('challengeRangeBlock');
+  dom.challengeRangeInput = document.getElementById('challengeRangeInput');
+  dom.challengeRangeLabel = document.getElementById('challengeRangeLabel');
+  dom.challengeRangeMinusBtn = document.getElementById('challengeRangeMinusBtn');
+  dom.challengeRangePlusBtn = document.getElementById('challengeRangePlusBtn');
 }
 
 function bindEvents() {

@@ -795,6 +795,26 @@ th {
   text-align: left;
 }
 
+.challenge-row.challenge-selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.18);
+}
+
+.challenge-row.challenge-target {
+  border-color: #ea580c;
+  background: rgba(234, 88, 12, 0.10);
+  color: #9a3412;
+}
+
+.challenge-row.challenge-target .challenge-rank {
+  color: #ea580c;
+}
+
+.challenge-row.challenge-dimmed {
+  opacity: 0.28;
+}
+
 .challenge-rank {
   font-size: 1.3rem;
   font-weight: 800;
@@ -841,4 +861,10 @@ th {
 .challenge-targets {
   display: grid;
   gap: 10px;
+}
+
+.th-tip {
+  cursor: help;
+  border-bottom: 1px dashed var(--border);
+  text-decoration: none;
 }
