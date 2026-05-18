@@ -10,6 +10,10 @@
     <link rel="stylesheet" href="style.css" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com; img-src 'self' data:;">
     <link rel="icon" href="data:,">
+    <style>
+      .live-card--incomplete { box-shadow: 0 0 0 3px #f97316, 0 0 12px rgba(249,115,22,0.35); animation: pulse-orange 1.8s ease-in-out infinite; }
+      @keyframes pulse-orange { 0%,100%{box-shadow:0 0 0 3px #f97316,0 0 12px rgba(249,115,22,0.35)} 50%{box-shadow:0 0 0 5px #fb923c,0 0 20px rgba(251,146,60,0.5)} }
+    </style>
   </head>
   <body>
     <div class="app-shell">
@@ -22,6 +26,7 @@
         <div class="home-actions">
           <button class="btn btn-primary btn-xl" id="startNewTournamentBtn" type="button">▶ Nouveau tournoi</button>
           <button class="btn btn-secondary btn-lg" id="resumeSessionBtn" type="button">↩ Reprendre une séance</button>
+          <button class="btn btn-secondary btn-lg" id="classroomsBtn" type="button">🏫 Mes classes</button>
           <button class="btn btn-secondary btn-lg hidden" id="lastStatsBtn" type="button">📊 Dernière séance : Stats</button>
         </div>
       </section>
@@ -158,6 +163,17 @@
               </div>
               <p style="color:var(--text-soft);font-size:0.88rem;margin-top:8px;">Un joueur peut défier quelqu'un dans cette fourchette au-dessus de lui dans le classement.</p>
             </div>
+            <div class="inline-block" id="poolSizeBlock" style="display:none;">
+              <span class="field-label">Taille des poules</span>
+              <div class="stepper-row compact">
+                <button class="stepper-btn" id="poolSizeMinusBtn" type="button" aria-label="Réduire la taille de poule">−</button>
+                <label class="stepper-display">
+                  <input id="poolSizeInput" type="number" min="3" max="6" value="4" />
+                  <span id="poolSizeLabel">4</span>
+                </label>
+                <button class="stepper-btn" id="poolSizePlusBtn" type="button" aria-label="Augmenter la taille de poule">+</button>
+              </div>
+            </div>
           </details>
 
           <button class="btn btn-primary btn-launch" id="launchTournamentBtn" type="submit">▶ Lancer le tournoi</button>
@@ -180,8 +196,8 @@
       </section>
 
       <section class="view" id="view-live" data-view="live">
-        <header class="live-header">
-          <div>
+        <header class="live-header" id="liveHeader">
+          <div id="liveHeaderInfo" style="cursor:pointer;" title="Cliquer pour réduire/agrandir">
             <p class="section-kicker" id="liveModeLabel">Tournoi en cours</p>
             <h2 id="liveSessionTitle">Séance</h2>
             <p id="liveRotationLabel">Rotation 1 / 1</p>
@@ -242,6 +258,33 @@
           <button class="btn btn-secondary btn-lg" id="saveSummaryBtn" type="button">💾 Sauvegarder la séance</button>
           <button class="btn btn-primary btn-lg" id="exportCsvBtn" type="button">↗️ Exporter CSV</button>
         </div>
+      </section>
+
+      <section class="view" id="view-classrooms" data-view="classrooms">
+        <header class="view-header">
+          <div>
+            <p class="section-kicker">Suivi élèves</p>
+            <h2>Mes classes</h2>
+            <p>Suivi multi-séances par classe.</p>
+          </div>
+          <button class="btn btn-secondary btn-sm" type="button" data-view-target="home">Accueil</button>
+        </header>
+        <div id="classroomsList"></div>
+        <div class="footer-actions">
+          <button class="btn btn-primary btn-lg" id="addClassroomBtn" type="button">➕ Nouvelle classe</button>
+        </div>
+      </section>
+
+      <section class="view" id="view-classroom-detail" data-view="classroom-detail">
+        <header class="view-header">
+          <div>
+            <p class="section-kicker">Classe</p>
+            <h2 id="classroomDetailTitle">—</h2>
+            <p id="classroomDetailMeta"></p>
+          </div>
+          <button class="btn btn-secondary btn-sm" type="button" data-view-target="classrooms">← Mes classes</button>
+        </header>
+        <div id="classroomDetailContent"></div>
       </section>
     </div>
 

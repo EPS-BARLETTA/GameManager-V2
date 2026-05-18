@@ -2,11 +2,13 @@
 
 const STORAGE_KEY = 'eps-tournoi-v1';
 const SESSIONS_KEY = 'eps-tournoi-sessions-v1';
+const CLASSROOMS_KEY = 'eps-classrooms-v1';
 const TEAM_COLOR_SUGGESTIONS = ['Bleu', 'Rouge', 'Vert', 'Jaune', 'Orange', 'Blanc', 'Noir', 'Rose'];
 
 const TOURNAMENT_MODES = {
   'round-robin': { label: 'Championnat' },
   'groups-finals': { label: 'Coupe du monde' },
+  'groups-pools': { label: 'Poules' },
   'rotating-teams': { label: 'Poules tournantes' },
   ladder: { label: 'Échelle / Ladder' },
   swiss: { label: 'Ronde suisse' },
@@ -21,6 +23,7 @@ const FORMAT_DEFINITIONS = {
   ],
   raquette: [
     { id: 'round-robin', icon: '🏸', title: 'Tournoi poule', description: 'Tous contre tous sur les terrains', recommended: true },
+    { id: 'groups-pools', icon: '🏸', title: 'Poules', description: 'Groupes de 3–6 joueurs, rotations et rôles dans chaque poule', recommended: true },
     { id: 'ladder', icon: '🪜', title: 'Échelle / Ladder', description: 'Montée-descente entre les terrains', recommended: false },
     { id: 'swiss', icon: '🇨🇭', title: 'Ronde suisse', description: 'Appariement progressif selon le niveau', recommended: false },
     { id: 'challenge', icon: '⚔️', title: 'Défi', description: 'Classement vivant — défie quelqu\'un mieux classé', recommended: false },
@@ -48,6 +51,7 @@ function createDefaultDraft() {
     scoreTable: false,
     sessionName: '',
     challengeRange: 5,
+    poolSize: 4,
   };
 }
 
@@ -148,6 +152,22 @@ function ensureTeamListLength(list, length, prefix = 'Équipe') {
   });
 }
 
+function getEnabledRolesFromOptions(options = {}) {
+  const roles = [];
+  if (options.rotatingReferee) roles.push('Arbitre');
+  if (options.scoreTable) roles.push('Table');
+  return roles;
+}
+
+function assignRolesForByes(byeList, enabledRoles) {
+  const names = Array.isArray(byeList) ? byeList.filter(Boolean) : [];
+  const roles = Array.isArray(enabledRoles) && enabledRoles.length ? enabledRoles : ['Spectateur actif'];
+  return names.map((name, index) => ({
+    name,
+    role: roles[index % roles.length],
+  }));
+}
+
 function getSuggestedTeamConfigurations(studentCount) {
   const safeCount = clampSetupCount(studentCount, 24);
   return Array.from({ length: 7 }, (_, offset) => offset + 2)
@@ -246,7 +266,7 @@ function getDraftStudentNames(count) {
 
 /* === Fonctions de génération récupérées/adaptées === */
 
-function createRoundRobinPairs(teamNames) {
+function createRoundRobinPairs(teamNames, options = {}) {
   const working = [...teamNames];
   const needsBye = working.length % 2 === 1;
   if (needsBye) working.push('Exempt');
@@ -254,6 +274,7 @@ function createRoundRobinPairs(teamNames) {
   let rest = working.slice(1);
   const rounds = [];
   const totalRounds = working.length - 1;
+  let previousReferee = null;
   for (let roundIndex = 0; roundIndex < totalRounds; roundIndex += 1) {
     const current = [pivot, ...rest];
     const matches = [];
@@ -274,6 +295,15 @@ function createRoundRobinPairs(teamNames) {
         home,
         away,
       });
+    }
+    const roundReferee = options.rotatingReferee ? (byes[0] || previousReferee || null) : null;
+    if (roundReferee) {
+      matches.forEach(match => {
+        match.referee = roundReferee;
+      });
+    }
+    if (byes[0]) {
+      previousReferee = byes[0];
     }
     rounds.push({ matches, byes });
     rest.unshift(rest.pop());
@@ -318,6 +348,7 @@ function assembleSchedule(entries, teams, options, metaExtras) {
         endLabel,
         matches: preparedMatches,
         byes: [...(entry.byes || [])],
+        byeAssignments: Array.isArray(entry.byeAssignments) ? structuredClone(entry.byeAssignments) : [],
       });
       rotationNumber += 1;
       if (clock != null) {
@@ -345,7 +376,7 @@ function assembleSchedule(entries, teams, options, metaExtras) {
 }
 
 function buildSinglePoolSchedule(teams, options) {
-  const rounds = createRoundRobinPairs(teams);
+  const rounds = createRoundRobinPairs(teams, options);
   const entries = rounds.map((round, index) => ({
     phase: 'single',
     title: `Rotation ${index + 1}`,
@@ -476,7 +507,7 @@ function buildFinalEntries(groups) {
 function buildGroupedSchedule(groups, allTeams, options, extras = {}) {
   const groupedRounds = groups.map(group => ({
     ...group,
-    rounds: createRoundRobinPairs(group.teams),
+    rounds: createRoundRobinPairs(group.teams, options),
   }));
   const entries = [];
   const maxRounds = Math.max(...groupedRounds.map(group => group.rounds.length));
@@ -511,6 +542,49 @@ function buildGroupedSchedule(groups, allTeams, options, extras = {}) {
     formatLabel: extras.finals ? TOURNAMENT_MODES['groups-finals'].label : 'Groupes',
     groups,
     finals: extras.finals ? { enabled: true } : null,
+  });
+}
+
+function buildGroupPoolsRaquetteSchedule(teams, options) {
+  const poolSize = clampNumber(Number(options.poolSize) || 4, 3, 6, 4);
+  const targetGroups = Math.max(1, Math.ceil(teams.length / poolSize));
+  const groups = distributeIntoGroups(teams, { targetGroups });
+  const enabledRoles = getEnabledRolesFromOptions(options);
+  const groupedRounds = groups.map(group => ({
+    ...group,
+    rounds: createRoundRobinPairs(group.teams, options),
+  }));
+  const entries = [];
+  const maxRounds = Math.max(...groupedRounds.map(group => group.rounds.length));
+  for (let roundIndex = 0; roundIndex < maxRounds; roundIndex += 1) {
+    const matches = [];
+    const byes = [];
+    groupedRounds.forEach(group => {
+      const round = group.rounds[roundIndex];
+      if (!round) return;
+      round.matches.forEach(match => {
+        matches.push({
+          ...match,
+          phase: 'groups-pools',
+          groupId: group.id,
+          groupLabel: group.label,
+        });
+      });
+      round.byes.forEach(name => byes.push(name));
+    });
+    entries.push({
+      phase: 'groups-pools',
+      title: `Rotation ${entries.length + 1}`,
+      matches,
+      byes,
+      byeAssignments: assignRolesForByes(byes, enabledRoles),
+    });
+  }
+  return assembleSchedule(entries, teams, options, {
+    format: 'groups-pools',
+    formatLabel: TOURNAMENT_MODES['groups-pools'].label,
+    groups,
+    finals: null,
   });
 }
 
@@ -601,6 +675,7 @@ function buildSwissRotation(roundNumber, matches, playerMap) {
       phase: 'swiss',
       swissP1Id: match.p1Id,
       swissP2Id: match.p2Id,
+      swissNote: `${playerMap.get(match.p1Id)?.name || ''} et ${playerMap.get(match.p2Id)?.name || ''} ont tous les deux ${playerMap.get(match.p1Id)?.points || 0} pt${(playerMap.get(match.p1Id)?.points || 0) > 1 ? 's' : ''}`,
     })),
     byes: matches.filter(match => match.bye).map(match => playerMap.get(match.p1Id)?.name).filter(Boolean),
   };
@@ -792,6 +867,7 @@ function generateRotatingTeamsSchedule(teams, options) {
   }
   const targetRotations = getEstimatedRotationCount(names.length, options.fields, { teamBased: false });
   const rotationsByPool = pools.map(pool => buildIntraPoolRotations(pool.players, teamSize, targetRotations));
+  const enabledRoles = getEnabledRolesFromOptions(options);
   const rotations = [];
   for (let rotationIndex = 0; rotationIndex < targetRotations; rotationIndex += 1) {
     const matches = [];
@@ -819,6 +895,7 @@ function generateRotatingTeamsSchedule(teams, options) {
       phase: 'rotating-teams',
       matches,
       byes,
+      byeAssignments: assignRolesForByes(byes, enabledRoles),
     });
   }
   const players = [];
@@ -866,6 +943,9 @@ function generateSchedule(teams, options) {
     const groups = distributeIntoGroups(teams, { finals: true, targetGroups: 2 });
     return buildGroupedSchedule(groups, teams, options, { finals: true });
   }
+  if (format === 'groups-pools') {
+    return buildGroupPoolsRaquetteSchedule(teams, options);
+  }
   if (format === 'rotating-teams') {
     return generateRotatingTeamsSchedule(teams, options);
   }
@@ -888,7 +968,8 @@ function loadState() {
     const raw = localStorage.getItem(STORAGE_KEY);
     return raw ? JSON.parse(raw) : null;
   } catch (error) {
-    console.warn('Impossible de charger l’état principal', error);
+    console.warn('[EPS Tournoi] Données corrompues, réinitialisation.', error);
+    try { localStorage.removeItem(STORAGE_KEY); } catch (_) {}
     return null;
   }
 }
@@ -908,13 +989,14 @@ function sanitizeState(raw) {
       ...(source.timer || {}),
     },
   };
-  next.view = ['home', 'new', 'sessions', 'live', 'summary'].includes(next.view) ? next.view : 'home';
+  next.view = ['home', 'new', 'sessions', 'live', 'summary', 'classrooms', 'classroom-detail'].includes(next.view) ? next.view : 'home';
   next.draft.sport = next.draft.sport === 'raquette' ? 'raquette' : 'sport-co';
   const allowedFormats = FORMAT_DEFINITIONS[next.draft.sport].map(item => item.id);
   next.draft.format = allowedFormats.includes(next.draft.format) ? next.draft.format : FORMAT_DEFINITIONS[next.draft.sport][0].id;
   next.draft.participantCount = clampSetupCount(next.draft.participantCount, 24);
   next.draft.fields = clampNumber(Number(next.draft.fields) || 2, 1, 20, 2);
   next.draft.challengeRange = clampNumber(Number(next.draft.challengeRange) || 5, 1, 10, 5);
+  next.draft.poolSize = clampNumber(Number(next.draft.poolSize) || 4, 3, 6, 4);
   next.draft.duration = clampNumber(Number(next.draft.duration) || 7, 1, 60, 7);
   next.draft.startTime = next.draft.startTime || '10:00';
   next.draft.endTime = next.draft.endTime || '11:00';
@@ -947,13 +1029,46 @@ function loadStoredSessions() {
     const parsed = raw ? JSON.parse(raw) : [];
     return Array.isArray(parsed) ? parsed : [];
   } catch (error) {
-    console.warn('Impossible de charger les séances', error);
+    console.warn('[EPS Tournoi] Données corrompues, réinitialisation.', error);
+    try { localStorage.removeItem(SESSIONS_KEY); } catch (_) {}
     return [];
   }
 }
 
 function saveStoredSessions(entries) {
   localStorage.setItem(SESSIONS_KEY, JSON.stringify(entries));
+}
+
+function loadClassrooms() {
+  try {
+    const raw = localStorage.getItem(CLASSROOMS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    console.warn('[EPS Tournoi] Données corrompues, réinitialisation.', error);
+    try { localStorage.removeItem(CLASSROOMS_KEY); } catch (_) {}
+    return [];
+  }
+}
+
+function saveClassrooms(list) {
+  localStorage.setItem(CLASSROOMS_KEY, JSON.stringify(Array.isArray(list) ? list : []));
+}
+
+function getClassroomById(id) {
+  return loadClassrooms().find(classroom => classroom.id === id) || null;
+}
+
+function upsertClassroom(classroom) {
+  if (!classroom?.id) return;
+  const list = loadClassrooms().filter(entry => entry.id !== classroom.id);
+  list.push(classroom);
+  list.sort((left, right) => String(left.name || '').localeCompare(String(right.name || ''), 'fr'));
+  saveClassrooms(list);
+}
+
+function deleteClassroom(id) {
+  saveClassrooms(loadClassrooms().filter(classroom => classroom.id !== id));
 }
 
 function buildAppSaveSnapshot(session = state.currentSession) {
@@ -971,6 +1086,8 @@ function buildAppSaveSnapshot(session = state.currentSession) {
     options: { ...session.options },
     completed: Boolean(session.completed),
     createdAt: session.createdAt,
+    classroomId: session.classroomId || null,
+    classroomName: session.classroomName || null,
     challengeOrder: session.challengeOrder ? [...session.challengeOrder] : undefined,
     challengeLog: session.challengeLog ? structuredClone(session.challengeLog) : undefined,
   };
@@ -1244,6 +1361,8 @@ function computeIndividualStandings(session) {
       } else {
         home.draws += 1;
         away.draws += 1;
+        home.points += 1;
+        away.points += 1;
       }
     });
   });
@@ -1272,10 +1391,11 @@ function computeStandings(session) {
       const log = session.challengeLog || [];
       const asChallenger = log.filter(l => l.challenger === name);
       const asTarget = log.filter(l => l.target === name);
-      const wins = asChallenger.filter(l => l.challengerWon).length
-                 + asTarget.filter(l => !l.challengerWon).length;
-      const losses = asChallenger.filter(l => !l.challengerWon).length
-                   + asTarget.filter(l => l.challengerWon).length;
+      const wins = asChallenger.filter(l => !l.isDraw && l.challengerWon).length
+                 + asTarget.filter(l => !l.isDraw && !l.challengerWon).length;
+      const losses = asChallenger.filter(l => !l.isDraw && !l.challengerWon).length
+                   + asTarget.filter(l => !l.isDraw && l.challengerWon).length;
+      const draws = log.filter(l => l.isDraw && (l.challenger === name || l.target === name)).length;
       const played = asChallenger.length + asTarget.length;
       const totalFor = asChallenger.reduce((s, l) => s + (l.challengerScore || 0), 0)
                      + asTarget.reduce((s, l) => s + (l.targetScore || 0), 0);
@@ -1286,7 +1406,7 @@ function computeStandings(session) {
         rank: idx + 1,
         wins,
         losses,
-        draws: 0,
+        draws,
         played,
         points: wins,
         pointsFor: totalFor,
@@ -1305,6 +1425,56 @@ function computeStandings(session) {
   return computeIndividualStandings(session);
 }
 
+function computeStudentStatsFromSession(session) {
+  const standings = computeStandings(session);
+  return standings.map((row, index) => ({
+    name: row.name,
+    played: row.played,
+    wins: row.wins,
+    losses: row.losses,
+    draws: row.draws,
+    pointsFor: row.pointsFor,
+    pointsAgainst: row.pointsAgainst,
+    finalRank: index + 1,
+  }));
+}
+
+function mergeStudentIntoClassroom(classroom, studentStats, sessionId) {
+  if (!classroom || !Array.isArray(studentStats)) return classroom;
+  if (!Array.isArray(classroom.students)) classroom.students = [];
+  if (!Array.isArray(classroom.sessionIds)) classroom.sessionIds = [];
+  if (classroom.sessionIds.includes(sessionId)) return classroom;
+  studentStats.forEach(stat => {
+    let student = classroom.students.find(entry => entry.name === stat.name);
+    if (!student) {
+      student = {
+        name: stat.name,
+        totalPlayed: 0,
+        totalWins: 0,
+        totalLosses: 0,
+        totalDraws: 0,
+        totalPointsFor: 0,
+        totalPointsAgainst: 0,
+        bestRank: null,
+        lastRank: null,
+        sessionsCount: 0,
+      };
+      classroom.students.push(student);
+    }
+    student.totalPlayed += stat.played || 0;
+    student.totalWins += stat.wins || 0;
+    student.totalLosses += stat.losses || 0;
+    student.totalDraws += stat.draws || 0;
+    student.totalPointsFor += stat.pointsFor || 0;
+    student.totalPointsAgainst += stat.pointsAgainst || 0;
+    student.sessionsCount += 1;
+    student.bestRank = student.bestRank == null ? stat.finalRank : Math.min(student.bestRank, stat.finalRank);
+    student.lastRank = stat.finalRank;
+  });
+  classroom.sessionIds.push(sessionId);
+  return classroom;
+}
+
 /* === Navigation entre vues === */
 
 function showView(viewName) {
@@ -1317,6 +1487,7 @@ function showView(viewName) {
   if (viewName === 'sessions') renderSessionsView();
   if (viewName === 'live') renderLiveView();
   if (viewName === 'summary') renderSummaryView();
+  if (viewName === 'classrooms') renderClassroomsView();
   persistState();
 }
 
@@ -1456,6 +1627,12 @@ function renderNewTournamentView() {
     if (dom.challengeRangeInput) dom.challengeRangeInput.value = state.draft.challengeRange;
     if (dom.challengeRangeLabel) dom.challengeRangeLabel.textContent = `±${state.draft.challengeRange}`;
   }
+  const isGroupPools = state.draft.format === 'groups-pools';
+  if (dom.poolSizeBlock) {
+    dom.poolSizeBlock.style.display = isGroupPools ? '' : 'none';
+    if (dom.poolSizeInput) dom.poolSizeInput.value = state.draft.poolSize;
+    if (dom.poolSizeLabel) dom.poolSizeLabel.textContent = `${state.draft.poolSize}`;
+  }
 }
 
 function buildLaunchOptions() {
@@ -1473,6 +1650,7 @@ function buildLaunchOptions() {
     rotatingReferee: Boolean(state.draft.rotatingReferee),
     scoreTable: Boolean(state.draft.scoreTable),
     challengeRange: state.draft.challengeRange || 5,
+    poolSize: state.draft.poolSize || 4,
   };
   return options;
 }
@@ -1496,7 +1674,7 @@ function createTeamsForLaunch(options) {
   return getDraftStudentNames(count);
 }
 
-function launchTournament() {
+async function launchTournament() {
   const options = buildLaunchOptions();
   const teams = createTeamsForLaunch(options);
   const schedule = generateSchedule(teams, options);
@@ -1517,8 +1695,10 @@ function launchTournament() {
       startTime: options.startTime,
       endTime: options.endTime,
       teamSize: options.teamSize,
+      poolSize: options.poolSize,
       rotatingReferee: options.rotatingReferee,
       scoreTable: options.scoreTable,
+      challengeRange: options.challengeRange,
     },
     completed: false,
   };
@@ -1526,6 +1706,15 @@ function launchTournament() {
     session.challengeOrder = session.schedule.teams.map(t => t.name);
     session.challengeLog = [];
     session.options.challengeRange = options.challengeRange || 5;
+  }
+  const classroomChoice = await promptClassroomChoice();
+  if (classroomChoice) {
+    const classroom = getClassroomById(classroomChoice);
+    session.classroomId = classroom?.id || null;
+    session.classroomName = classroom?.name || null;
+  } else {
+    session.classroomId = null;
+    session.classroomName = null;
   }
   state.currentSession = session;
   resetTimer();
@@ -1568,6 +1757,17 @@ function startTimer() {
   runtime.timerInterval = window.setInterval(() => {
     state.timer.remainingSeconds = Math.max(0, state.timer.remainingSeconds - 1);
     if (state.timer.remainingSeconds === 0) {
+      if (typeof AudioContext !== 'undefined') {
+        const ctx = new AudioContext();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.frequency.value = 880;
+        gain.gain.setValueAtTime(0.4, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.8);
+        osc.start(); osc.stop(ctx.currentTime + 0.8);
+      }
+      if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
       pauseTimer();
     }
     renderTimer();
@@ -1620,6 +1820,14 @@ function autoSave() {
 function finishTournament() {
   if (!state.currentSession) return;
   state.currentSession.completed = true;
+  if (state.currentSession.classroomId) {
+    const classroom = getClassroomById(state.currentSession.classroomId);
+    if (classroom) {
+      const stats = computeStudentStatsFromSession(state.currentSession);
+      mergeStudentIntoClassroom(classroom, stats, state.currentSession.id);
+      upsertClassroom(classroom);
+    }
+  }
   saveSessionLocally(state.currentSession);
   showView('summary');
 }
@@ -1633,6 +1841,28 @@ function renderRankingDrawer(session) {
   dom.liveRankingContent.innerHTML = renderStandingsTable(session, standings);
 }
 
+function getRoleBadgeStyle(role) {
+  if (role === 'Arbitre') return 'background:rgba(249,115,22,0.14);color:#c2410c;border:1px solid rgba(249,115,22,0.3);';
+  if (role === 'Table') return 'background:rgba(59,130,246,0.14);color:#1d4ed8;border:1px solid rgba(59,130,246,0.3);';
+  if (role === 'Coach') return 'background:rgba(34,197,94,0.14);color:#15803d;border:1px solid rgba(34,197,94,0.3);';
+  return 'background:rgba(15,23,42,0.06);color:var(--text-soft);border:1px solid rgba(148,163,184,0.25);';
+}
+
+function renderByeAssignmentsBlock(assignments, session) {
+  if (!Array.isArray(assignments) || !assignments.length) return '';
+  return `<div style="margin-top:16px;padding:14px 16px;border-radius:16px;background:#fef9c3;border:1px solid #ca8a04;color:#92400e;font-weight:600;">
+    ⚠️ Élève(s) au repos cette rotation :
+    <div style="display:grid;gap:8px;margin-top:10px;">
+      ${assignments.map(entry => `
+        <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;">
+          <strong>${escapeHtml(session && session.sport === 'sport-co' && session.format !== 'rotating-teams' ? entry.name : formatDisplayName(entry.name))}</strong>
+          <span style="display:inline-flex;align-items:center;justify-content:center;padding:4px 10px;border-radius:999px;font-size:0.8rem;font-weight:700;${getRoleBadgeStyle(entry.role)}">${escapeHtml(entry.role)}</span>
+        </div>
+      `).join('')}
+    </div>
+   </div>`;
+}
+
 function renderLiveMatches(session) {
   const rotation = getCurrentRotation(session);
   if (!rotation) {
@@ -1640,7 +1870,11 @@ function renderLiveMatches(session) {
     return;
   }
   const editable = isCurrentRotationEditable(session, session.currentRotation);
+  const enabledRoles = getEnabledRolesFromOptions(session.options || {});
   const exemptPlayers = [...(rotation.byes || [])];
+  const byeAssignments = Array.isArray(rotation.byeAssignments) && rotation.byeAssignments.length
+    ? rotation.byeAssignments
+    : assignRolesForByes(exemptPlayers, enabledRoles);
   const visibleMatches = rotation.matches.filter(match => {
     const p = resolveMatchParticipants(match, session);
     if (p.home === 'Exempt') { exemptPlayers.push(p.away); return false; }
@@ -1651,11 +1885,12 @@ function renderLiveMatches(session) {
   const matchesHtml = visibleMatches.map(match => {
     const participants = resolveMatchParticipants(match, session);
     const record = session.scores[match.id] || { home: 0, away: 0 };
+    const complete = isScoreComplete(getScoreRecord(session, match.id));
     const subtitle = match.groupLabel ? `${match.groupLabel}` : rotation.title;
     if (session.format === 'rotating-teams') {
       const selectedOutcome = record.home > record.away ? 'home' : record.away > record.home ? 'away' : isScoreComplete(record) ? 'draw' : '';
       return `
-        <article class="live-card">
+        <article class="live-card ${complete ? '' : 'live-card--incomplete'}">
           <div class="live-card-head">
             <div>
               <p class="section-kicker">Terrain ${match.field}</p>
@@ -1675,8 +1910,13 @@ function renderLiveMatches(session) {
     }
     const displayHome = session.sport === 'raquette' ? formatDisplayName(participants.home) : participants.home;
     const displayAway = session.sport === 'raquette' ? formatDisplayName(participants.away) : participants.away;
+    const extraInfo = [
+      match.referee ? `<p style="margin:10px 0 0;color:#c2410c;font-weight:700;">🟠 Arbitre : ${escapeHtml(match.referee)}</p>` : '',
+      match.ladderReferee ? `<p style="margin:10px 0 0;color:#c2410c;font-weight:700;">🟠 Arbitre : ${escapeHtml(formatDisplayName(match.ladderReferee))}</p>` : '',
+      match.swissNote ? `<p style="margin:10px 0 0;color:var(--text-soft);font-style:italic;">${escapeHtml(match.swissNote)}</p>` : '',
+    ].filter(Boolean).join('');
     return `
-      <article class="live-card">
+      <article class="live-card ${complete ? '' : 'live-card--incomplete'}">
         <div class="live-card-head">
           <div>
             <p class="section-kicker">Terrain ${match.field}</p>
@@ -1698,15 +1938,15 @@ function renderLiveMatches(session) {
           <button class="score-btn" type="button" data-score-step="1" data-score-side="away" data-match-id="${match.id}" ${editable && !participants.unresolved ? '' : 'disabled'}>+</button>
           <div></div>
         </div>
+        ${extraInfo}
       </article>
     `;
   }).join('');
 
-  const exemptHtml = exemptPlayers.length
-    ? `<div style="margin-top:16px;padding:14px 16px;border-radius:16px;background:#fef9c3;border:1px solid #ca8a04;color:#92400e;font-weight:600;">
-        ⚠️ Joueur(s) au repos cette rotation : <strong>${exemptPlayers.map(n => escapeHtml(formatDisplayName(n))).join(', ')}</strong>
-       </div>`
-    : '';
+  const effectiveByeAssignments = session.format === 'rotating-teams'
+    ? (rotation.byeAssignments || byeAssignments)
+    : assignRolesForByes(exemptPlayers, enabledRoles);
+  const exemptHtml = renderByeAssignmentsBlock(effectiveByeAssignments, session);
 
   dom.liveMatches.innerHTML = matchesHtml + exemptHtml;
 }
@@ -1724,11 +1964,20 @@ function renderChallengeLive(session) {
   dom.timerPauseBtn.disabled = true;
   dom.timerResetBtn.disabled = true;
   dom.prevRotationBtn.disabled = true;
+  if (!dom.nextRotationBtn._challengeHandlerSet) {
+    dom.nextRotationBtn.addEventListener('click', () => {
+      if (state.currentSession?.format === 'challenge') finishTournament();
+    });
+    dom.nextRotationBtn._challengeHandlerSet = true;
+  }
   dom.nextRotationBtn.textContent = '🏁 Terminer';
-  dom.nextRotationBtn.onclick = () => { finishTournament(); };
+  dom.nextRotationBtn.disabled = false;
 
   const challengeRange = session.options.challengeRange || 5;
-  const order = session.challengeOrder || session.schedule.teams.map(t => t.name);
+  session.challengeOrder = Array.isArray(session.challengeOrder) && session.challengeOrder.length
+    ? session.challengeOrder
+    : session.schedule.teams.map(t => t.name);
+  const order = session.challengeOrder;
 
   dom.liveMatches.innerHTML = `
     <div class="challenge-board">
@@ -1737,7 +1986,7 @@ function renderChallengeLive(session) {
       </p>
       <div class="challenge-list" id="challengeList">
         ${order.map((name, idx) => `
-          <button class="challenge-row" type="button" data-challenge-index="${idx}">
+          <button class="challenge-row" type="button" data-challenge-index="${idx}" title="Rang ${idx + 1} — peut défier jusqu'à ±${challengeRange} joueurs mieux classés">
             <span class="challenge-rank">${idx + 1}</span>
             <span class="challenge-name">${escapeHtml(formatDisplayName(name))}</span>
             <span class="challenge-action">${idx === 0 ? '' : '⚔️'}</span>
@@ -1781,7 +2030,7 @@ function renderChallengeLive(session) {
     if (highlightTimeout) { clearTimeout(highlightTimeout); highlightTimeout = null; }
     selectedChallengerIdx = null;
     document.querySelectorAll('#challengeList .challenge-row').forEach(btn => {
-      btn.classList.remove('challenge-selected', 'challenge-target', 'challenge-dimmed');
+      btn.classList.remove('challenge-selected', 'challenge-target', 'challenge-challenger', 'challenge-dimmed');
     });
     const hint = document.getElementById('challengeHint');
     if (hint) {
@@ -1820,7 +2069,8 @@ function renderChallengeLive(session) {
 
     document.getElementById('challengeConfirmBtn').onclick = () => {
       const co = session.challengeOrder;
-      const challengerWon = scores.away > scores.home;
+      const isDraw = scores.home === scores.away;
+      const challengerWon = !isDraw && scores.away > scores.home;
       session.challengeLog.push({
         challenger: challengerName,
         target: targetName,
@@ -1829,6 +2079,7 @@ function renderChallengeLive(session) {
         challengerScore: scores.away,
         targetScore: scores.home,
         challengerWon,
+        isDraw,
         ts: Date.now(),
       });
       if (challengerWon) {
@@ -1840,6 +2091,20 @@ function renderChallengeLive(session) {
       modal.classList.add('hidden');
       autoSave();
       renderChallengeLive(session);
+      if (isDraw) {
+        const hint = document.getElementById('challengeHint');
+        if (hint) {
+          hint.textContent = 'Match nul — les rangs restent inchangés.';
+          hint.style.color = 'var(--text-soft)';
+          setTimeout(() => {
+            const nextHint = document.getElementById('challengeHint');
+            if (nextHint) {
+              nextHint.textContent = 'Tape sur un joueur pour voir contre qui il peut jouer.';
+              nextHint.style.color = 'var(--text-soft)';
+            }
+          }, 3000);
+        }
+      }
     };
 
     document.getElementById('challengeCancelBtn').onclick = () => {
@@ -1866,7 +2131,10 @@ function renderChallengeLive(session) {
     if (clickedIdx === 0) {
       const hint = document.getElementById('challengeHint');
       if (hint) {
-        hint.textContent = `${formatDisplayName(order[0])} est en tête — personne à défier.`;
+        const maxChallenger = Math.min(session.challengeOrder.length, challengeRange + 1);
+        hint.textContent = maxChallenger > 1
+          ? `${formatDisplayName(session.challengeOrder[0])} est en tête — il ne peut défier personne. Peut être défié par rangs 2→${maxChallenger}.`
+          : `${formatDisplayName(session.challengeOrder[0])} est en tête — personne à défier.`;
         hint.style.color = 'var(--text-soft)';
       }
       setTimeout(() => {
@@ -1879,13 +2147,17 @@ function renderChallengeLive(session) {
     selectedChallengerIdx = clickedIdx;
     const minTarget = Math.max(0, clickedIdx - challengeRange);
     const maxTarget = clickedIdx - 1;
+    const minChallenger = clickedIdx + 1;
+    const maxChallenger = Math.min(session.challengeOrder.length - 1, clickedIdx + challengeRange);
 
     document.querySelectorAll('#challengeList .challenge-row').forEach((rowBtn, idx) => {
-      rowBtn.classList.remove('challenge-selected', 'challenge-target', 'challenge-dimmed');
+      rowBtn.classList.remove('challenge-selected', 'challenge-target', 'challenge-challenger', 'challenge-dimmed');
       if (idx === clickedIdx) {
         rowBtn.classList.add('challenge-selected');
       } else if (idx >= minTarget && idx <= maxTarget) {
         rowBtn.classList.add('challenge-target');
+      } else if (idx >= minChallenger && idx <= maxChallenger) {
+        rowBtn.classList.add('challenge-challenger');
       } else {
         rowBtn.classList.add('challenge-dimmed');
       }
@@ -1893,13 +2165,15 @@ function renderChallengeLive(session) {
 
     const hint = document.getElementById('challengeHint');
     if (hint) {
-      hint.textContent = `${formatDisplayName(order[clickedIdx])} — tape sur un adversaire en orange. Retour automatique dans 3 s.`;
+      const targetText = maxTarget >= minTarget ? `${minTarget + 1}→${maxTarget + 1}` : 'aucun';
+      const challengerText = maxChallenger >= minChallenger ? `${minChallenger + 1}→${maxChallenger + 1}` : 'aucun';
+      hint.textContent = `${formatDisplayName(session.challengeOrder[clickedIdx])} peut défier rangs ${targetText} · Peut être défié par rangs ${challengerText}`;
       hint.style.color = 'var(--accent-dark)';
     }
 
     highlightTimeout = setTimeout(() => {
       clearHighlight();
-    }, 3000);
+    }, 8000);
   });
 }
 
@@ -1911,8 +2185,16 @@ function renderLiveView() {
   }
   if (session.format === 'challenge') {
     renderChallengeLive(session);
+    const timerCard = document.querySelector('.timer-card');
+    if (timerCard) timerCard.style.display = 'none';
+    if (dom.prevRotationBtn) dom.prevRotationBtn.style.display = 'none';
+    if (dom.nextRotationBtn) dom.nextRotationBtn.style.display = 'none';
     return;
   }
+  const timerCard = document.querySelector('.timer-card');
+  if (timerCard) timerCard.style.display = '';
+  if (dom.prevRotationBtn) dom.prevRotationBtn.style.display = '';
+  if (dom.nextRotationBtn) dom.nextRotationBtn.style.display = '';
   const rotation = getCurrentRotation(session);
   dom.timerStartBtn.disabled = false;
   dom.timerPauseBtn.disabled = false;
@@ -1927,6 +2209,9 @@ function renderLiveView() {
     : 'Aucune rotation';
   renderTimer();
   renderLiveMatches(session);
+  if (session.format === 'swiss') {
+    dom.liveMatches.insertAdjacentHTML('afterbegin', '<div style="margin-bottom:16px;padding:12px 16px;border-radius:14px;background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.2);color:#1e3a8a;font-size:0.95rem;">🇨🇭 Ronde suisse : chaque rotation oppose des joueurs de niveau similaire. Après chaque round, les paires sont recalculées.</div>');
+  }
   renderRankingDrawer(session);
 }
 
@@ -1945,6 +2230,7 @@ function appendNextLadderRotation(session) {
   const activeCount = Math.min(order.length, Math.max(2, session.options.fields * 2 - ((session.options.fields * 2) % 2)));
   const activePlayers = order.slice(0, activeCount);
   const bench = order.slice(activeCount);
+  const promotedReferees = new Map();
   for (let index = 0; index < activePlayers.length; index += 2) {
     const home = activePlayers[index];
     const away = activePlayers[index + 1];
@@ -1954,6 +2240,7 @@ function appendNextLadderRotation(session) {
     const homeWon = record.home > record.away;
     const awayWon = record.away > record.home;
     if (awayWon) {
+      promotedReferees.set(match.field, away);
       activePlayers[index] = away;
       activePlayers[index + 1] = home;
     } else if (!homeWon && !awayWon) {
@@ -1973,6 +2260,11 @@ function appendNextLadderRotation(session) {
   order = [...activePlayers, ...bench];
   session.schedule.ladder.latestOrder = [...order];
   const nextRotation = buildLadderRotation(order, nextNumber, session.options);
+  nextRotation.matches.forEach(match => {
+    if (promotedReferees.has(match.field)) {
+      match.ladderReferee = promotedReferees.get(match.field);
+    }
+  });
   session.schedule.rotations.push(nextRotation);
   session.schedule.meta.matchCount += nextRotation.matches.length;
   return true;
@@ -2143,17 +2435,24 @@ function renderSummaryView() {
 
 function exportCsv(session = state.currentSession) {
   if (!session) return;
-  const standings = computeStandings(session);
+  let standings = computeStandings(session);
+  if (session.format === 'rotating-teams') {
+    standings = computeRotatingPlayerStats(session);
+  }
   const rankingHeader = 'nom;victoires;nuls;defaites;points;buts_pour;buts_contre';
   const rankingRows = standings.map(row => [row.name, row.wins, row.draws, row.losses, row.points, row.pointsFor, row.pointsAgainst].join(';'));
-  const matchHeader = 'rotation;terrain;domicile;exterieur;score_domicile;score_exterieur';
-  const matchRows = session.schedule.rotations.flatMap(rotation =>
+  let matchHeader = 'rotation;terrain;domicile;exterieur;score_domicile;score_exterieur';
+  let matchRows = session.schedule.rotations.flatMap(rotation =>
     rotation.matches.map(match => {
       const participants = resolveMatchParticipants(match, session);
       const record = getScoreRecord(session, match.id) || { home: '', away: '' };
       return [rotation.number, match.field || '', participants.home, participants.away, record.home ?? '', record.away ?? ''].join(';');
     })
   );
+  if (session.format === 'challenge') {
+    matchHeader = 'ordre;nom;victoires;defaites;points_marques;points_encaisses';
+    matchRows = standings.map((row, index) => [index + 1, row.name, row.wins, row.losses, row.pointsFor, row.pointsAgainst].join(';'));
+  }
   const csv = [
     'Classement général',
     rankingHeader,
@@ -2210,6 +2509,314 @@ function renderSessionsView() {
   `).join('');
 }
 
+function openClassroomModal(config = {}) {
+  return new Promise(resolve => {
+    const classrooms = loadClassrooms();
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,0.45);display:flex;align-items:center;justify-content:center;z-index:200;padding:20px;';
+    overlay.innerHTML = `
+      <div style="background:var(--surface);border-radius:var(--radius-xl);box-shadow:var(--shadow);width:min(100%,640px);padding:28px 24px;display:grid;gap:16px;max-height:90vh;overflow:auto;">
+        <div>
+          <p style="margin:0 0 8px;font-size:0.88rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--accent-dark);">${escapeHtml(config.kicker || 'Suivi élèves')}</p>
+          <h3 style="margin:0 0 8px;">${escapeHtml(config.title || 'Associer à une classe ?')}</h3>
+          <p style="margin:0;color:var(--text-soft);">${escapeHtml(config.subtitle || 'Permet un suivi élève sur plusieurs séances. Facultatif.')}</p>
+        </div>
+        ${classrooms.length ? `<div style="display:grid;gap:10px;">${classrooms.map(classroom => `<button class="choice-card" type="button" data-classroom-pick="${classroom.id}" style="justify-content:space-between;text-align:left;"><span>${escapeHtml(classroom.name)}</span><span style="color:var(--text-soft);font-size:0.9rem;">${classroom.sessionIds?.length || 0} séance${(classroom.sessionIds?.length || 0) > 1 ? 's' : ''}</span></button>`).join('')}</div>` : ''}
+        <div style="display:grid;gap:12px;">
+          <button class="btn btn-primary btn-lg" type="button" id="classroomCreateToggleBtn">➕ Nouvelle classe</button>
+          ${config.allowIgnore !== false ? '<button class="btn btn-secondary btn-lg" type="button" id="classroomIgnoreBtn">Ignorer</button>' : ''}
+        </div>
+        <div id="classroomCreateForm" style="display:none;gap:12px;">
+          <label class="field">
+            <span>Nom de la classe</span>
+            <input id="classroomNameInputModal" type="text" placeholder="4B" />
+          </label>
+          <button class="btn btn-primary btn-lg" type="button" id="classroomCreateConfirmBtn">Créer et associer</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    const cleanup = value => {
+      document.body.removeChild(overlay);
+      resolve(value);
+    };
+
+    overlay.addEventListener('click', event => {
+      if (event.target === overlay && config.allowIgnore !== false) {
+        cleanup(null);
+      }
+    });
+
+    overlay.querySelectorAll('[data-classroom-pick]').forEach(button => {
+      button.addEventListener('click', () => cleanup(button.dataset.classroomPick));
+    });
+
+    const createForm = overlay.querySelector('#classroomCreateForm');
+    const createToggle = overlay.querySelector('#classroomCreateToggleBtn');
+    if (createToggle) {
+      createToggle.addEventListener('click', () => {
+        createForm.style.display = createForm.style.display === 'none' ? 'grid' : 'none';
+      });
+    }
+
+    const ignoreBtn = overlay.querySelector('#classroomIgnoreBtn');
+    if (ignoreBtn) {
+      ignoreBtn.addEventListener('click', () => cleanup(null));
+    }
+
+    const createConfirm = overlay.querySelector('#classroomCreateConfirmBtn');
+    if (createConfirm) {
+      createConfirm.addEventListener('click', () => {
+        const input = overlay.querySelector('#classroomNameInputModal');
+        const name = String(input?.value || '').trim();
+        if (!name) return;
+        const classroom = {
+          id: uniqueId('class'),
+          name,
+          colorIndex: loadClassrooms().length % 8,
+          sport: config.sport || state.draft.sport || 'raquette',
+          createdAt: new Date().toISOString(),
+          sessionIds: [],
+          students: [],
+        };
+        upsertClassroom(classroom);
+        cleanup(classroom.id);
+      });
+    }
+  });
+}
+
+function promptClassroomChoice() {
+  return openClassroomModal({
+    title: 'Associer à une classe ?',
+    subtitle: 'Permet un suivi élève sur plusieurs séances. Facultatif.',
+    kicker: 'Suivi élèves',
+    allowIgnore: true,
+    sport: state.draft.sport,
+  });
+}
+
+async function promptCreateClassroom() {
+  const classroomId = await openClassroomModal({
+    title: 'Créer une classe',
+    subtitle: 'Ajoutez une classe pour suivre plusieurs séances.',
+    kicker: 'Mes classes',
+    allowIgnore: false,
+    sport: state.draft.sport,
+  });
+  if (classroomId) {
+    renderClassroomsView();
+  }
+}
+
+function renderClassroomsView() {
+  const classrooms = loadClassrooms();
+  if (!classrooms.length) {
+    dom.classroomsList.innerHTML = '<div class="empty-state">Aucune classe créée.<br>Cliquez sur « Nouvelle classe » pour commencer.</div>';
+    return;
+  }
+  dom.classroomsList.innerHTML = classrooms.map((classroom, index) => {
+    const colorClass = `classroom-color-${(classroom.colorIndex ?? index) % 8}`;
+    const sportLabel = classroom.sport === 'raquette' ? '🏸 Raquettes' : '⚽ Sport collectif';
+    const sessionCount = classroom.sessionIds?.length || 0;
+    const studentCount = classroom.students?.length || 0;
+    return `
+      <article class="classroom-card ${colorClass}">
+        <div>
+          <span class="classroom-sport-badge">${sportLabel}</span>
+          <h3>${escapeHtml(classroom.name)}</h3>
+          <p class="classroom-meta">${sessionCount} séance${sessionCount > 1 ? 's' : ''} · ${studentCount} élève${studentCount > 1 ? 's' : ''}</p>
+        </div>
+        <div class="classroom-actions">
+          <button class="btn btn-primary btn-sm" type="button" data-classroom-view="${classroom.id}">📂 Ouvrir la classe</button>
+          <button class="btn btn-secondary btn-sm" type="button" data-classroom-delete="${classroom.id}">🗑️ Supprimer</button>
+        </div>
+      </article>
+    `;
+  }).join('');
+  dom.classroomsList.querySelectorAll('[data-classroom-view]').forEach(button => {
+    button.addEventListener('click', () => showClassroomDetail(button.dataset.classroomView));
+  });
+  dom.classroomsList.querySelectorAll('[data-classroom-delete]').forEach(button => {
+    button.addEventListener('click', () => {
+      if (window.confirm('Supprimer définitivement cette classe et tout son historique ?')) {
+        deleteClassroom(button.dataset.classroomDelete);
+        renderClassroomsView();
+      }
+    });
+  });
+}
+
+function showClassroomDetail(classroomId) {
+  const classroom = getClassroomById(classroomId);
+  if (!classroom) return;
+  const allSessions = loadStoredSessions();
+  const sessions = allSessions
+    .filter(session => classroom.sessionIds?.includes(session.id))
+    .sort((a, b) => new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime());
+
+  const sportCoSessions = sessions.filter(s => s.sport !== 'raquette');
+  const raquetteSessions = sessions.filter(s => s.sport === 'raquette');
+
+  const students = [...(classroom.students || [])].sort((left, right) => {
+    const leftRatio = left.totalPlayed ? left.totalWins / left.totalPlayed : 0;
+    const rightRatio = right.totalPlayed ? right.totalWins / right.totalPlayed : 0;
+    if (rightRatio !== leftRatio) return rightRatio - leftRatio;
+    return left.name.localeCompare(right.name, 'fr');
+  });
+
+  const colorClass = `classroom-color-${(classroom.colorIndex ?? 0) % 8}`;
+
+  dom.classroomDetailTitle.textContent = classroom.name;
+  dom.classroomDetailMeta.textContent = `${sessions.length} séances · ${students.length} élèves`;
+
+  function renderSessionList(list) {
+    if (!list.length) return '<p style="color:var(--text-soft);padding:12px 0;">Aucune séance.</p>';
+    return list.map(session => {
+      const isCompleted = session.completed === true;
+      const statusBadge = isCompleted
+        ? '<span class="session-status-badge completed">✅ Terminé</span>'
+        : '<span class="session-status-badge ongoing">🔄 En cours</span>';
+      const date = new Date(session.savedAt).toLocaleDateString('fr-FR');
+      const formatLabel = escapeHtml(TOURNAMENT_MODES[session.format]?.label || session.format);
+      return `
+        <article class="session-item" style="margin-bottom:10px;">
+          <div class="session-item-header">
+            <strong>${escapeHtml(session.name || 'Séance sans nom')}</strong>
+            <span class="session-item-meta">${date} · ${formatLabel} ${statusBadge}</span>
+          </div>
+          <div class="session-item-actions">
+            <button class="btn btn-secondary btn-sm" type="button"
+              data-session-action="stats" data-session-id="${session.id}">
+              📊 Stats
+            </button>
+            ${!isCompleted ? `<button class="btn btn-primary btn-sm" type="button"
+              data-session-action="resume" data-session-id="${session.id}">
+              ▶ Reprendre
+            </button>` : ''}
+            <button class="btn btn-secondary btn-sm" type="button"
+              data-classroom-remove-session="${session.id}" data-classroom-id="${classroomId}"
+              style="color:#991b1b;">
+              🗑️ Retirer
+            </button>
+          </div>
+        </article>
+      `;
+    }).join('');
+  }
+
+  function renderStatTable(list, isSportCo) {
+    const studentsForSport = students.filter(s =>
+      isSportCo
+        ? list.some(sess => sess.id && classroom.sessionIds?.includes(sess.id))
+        : true
+    );
+    if (!studentsForSport.length) return '<p style="color:var(--text-soft);">Aucune donnée.</p>';
+    if (isSportCo) {
+      return `
+        <div class="summary-table-wrap">
+          <table>
+            <thead><tr>
+              <th>Équipe / Élève</th><th>Séances</th>
+              <th>J</th><th>V</th><th>N</th><th>D</th>
+              <th>BP</th><th>BC</th><th>Ratio V/J</th>
+            </tr></thead>
+            <tbody>
+              ${studentsForSport.map(s => `<tr>
+                <td>${escapeHtml(formatDisplayName(s.name))}</td>
+                <td>${s.sessionsCount}</td>
+                <td>${s.totalPlayed}</td>
+                <td>${s.totalWins}</td>
+                <td>${s.totalDraws}</td>
+                <td>${s.totalLosses}</td>
+                <td>${s.totalPointsFor}</td>
+                <td>${s.totalPointsAgainst}</td>
+                <td>${s.totalPlayed ? (s.totalWins / s.totalPlayed).toFixed(2) : '0.00'}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>`;
+    } else {
+      return `
+        <div class="summary-table-wrap">
+          <table>
+            <thead><tr>
+              <th>Joueur</th><th>Séances</th>
+              <th>Matchs</th><th>V</th><th>D</th>
+              <th>Ratio V/J</th><th>Meilleur rang</th>
+            </tr></thead>
+            <tbody>
+              ${studentsForSport.map(s => `<tr>
+                <td>${escapeHtml(formatDisplayName(s.name))}</td>
+                <td>${s.sessionsCount}</td>
+                <td>${s.totalPlayed}</td>
+                <td>${s.totalWins}</td>
+                <td>${s.totalLosses}</td>
+                <td>${s.totalPlayed ? (s.totalWins / s.totalPlayed).toFixed(2) : '0.00'}</td>
+                <td>${s.bestRank ?? '—'}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>`;
+    }
+  }
+
+  dom.classroomDetailContent.innerHTML = `
+    <div class="${colorClass}" style="margin-bottom:20px;">
+
+      ${sportCoSessions.length ? `
+      <section class="summary-card" style="margin-bottom:20px;">
+        <div class="panel-head">
+          <h3>⚽ Séances Sport collectif</h3>
+        </div>
+        ${renderSessionList(sportCoSessions)}
+        <details style="margin-top:12px;">
+          <summary style="cursor:pointer;font-weight:700;color:var(--text-soft);">📊 Stats cumulées Sport collectif</summary>
+          <div style="margin-top:12px;">${renderStatTable(sportCoSessions, true)}</div>
+        </details>
+      </section>` : ''}
+
+      ${raquetteSessions.length ? `
+      <section class="summary-card" style="margin-bottom:20px;">
+        <div class="panel-head">
+          <h3>🏸 Séances Raquettes</h3>
+        </div>
+        ${renderSessionList(raquetteSessions)}
+        <details style="margin-top:12px;">
+          <summary style="cursor:pointer;font-weight:700;color:var(--text-soft);">📊 Stats cumulées Raquettes</summary>
+          <div style="margin-top:12px;">${renderStatTable(raquetteSessions, false)}</div>
+        </details>
+      </section>` : ''}
+
+      ${!sportCoSessions.length && !raquetteSessions.length ? `
+      <div class="empty-state">Aucune séance associée à cette classe pour l'instant.<br>
+      Lancez un tournoi et associez-le à cette classe en fin de séance.</div>` : ''}
+
+    </div>
+  `;
+  dom.classroomDetailContent.querySelectorAll('[data-session-action]').forEach(button => {
+    button.addEventListener('click', () => {
+      const { sessionId, sessionAction: action } = button.dataset;
+      if (action === 'resume') restoreSession(sessionId, 'live');
+      if (action === 'stats') restoreSession(sessionId, 'summary');
+    });
+  });
+
+  dom.classroomDetailContent.querySelectorAll('[data-classroom-remove-session]').forEach(button => {
+    button.addEventListener('click', () => {
+      if (!window.confirm('Retirer cette séance de la classe ? (La séance reste dans vos sauvegardes)')) return;
+      const cl = getClassroomById(button.dataset.classroomId);
+      if (!cl) return;
+      cl.sessionIds = (cl.sessionIds || []).filter(id => id !== button.getAttribute('data-classroom-remove-session'));
+      upsertClassroom(cl);
+      showClassroomDetail(classroomId);
+    });
+  });
+
+  showView('classroom-detail');
+}
+
 function restoreSession(sessionId, targetView = 'live') {
   const snapshot = getSessionById(sessionId);
   if (!snapshot) return;
@@ -2234,10 +2841,22 @@ function restoreSession(sessionId, targetView = 'live') {
 /* === Vue 1 — accueil === */
 
 function renderHomeView() {
-  const sessions = loadStoredSessions().sort((left, right) => new Date(right.savedAt).getTime() - new Date(left.savedAt).getTime());
+  const sessions = loadStoredSessions().sort((a, b) => new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime());
+  const classrooms = loadClassrooms();
   const latest = sessions[0] || null;
-  dom.lastStatsBtn.classList.toggle('hidden', !latest);
-  dom.resumeSessionBtn.disabled = !latest;
+
+  const hasOngoing = sessions.some(s => !s.completed);
+  if (dom.resumeSessionBtn) dom.resumeSessionBtn.disabled = !hasOngoing;
+
+  if (dom.lastStatsBtn) {
+    if (latest) {
+      dom.lastStatsBtn.classList.remove('hidden');
+      const sportIcon = latest.sport === 'raquette' ? '🏸' : '⚽';
+      dom.lastStatsBtn.textContent = `${sportIcon} Dernière séance : ${escapeHtml(latest.name || 'Stats')}`;
+    } else {
+      dom.lastStatsBtn.classList.add('hidden');
+    }
+  }
 }
 
 /* === Événements === */
@@ -2416,6 +3035,18 @@ function handleGlobalInput(event) {
     persistState();
     return;
   }
+  if (event.target === dom.challengeRangeInput) {
+    state.draft.challengeRange = clampNumber(Number(event.target.value) || 5, 1, 10, 5);
+    if (dom.challengeRangeLabel) dom.challengeRangeLabel.textContent = `±${state.draft.challengeRange}`;
+    persistState();
+    return;
+  }
+  if (event.target === dom.poolSizeInput) {
+    state.draft.poolSize = clampNumber(Number(event.target.value) || 4, 3, 6, 4);
+    if (dom.poolSizeLabel) dom.poolSizeLabel.textContent = `${state.draft.poolSize}`;
+    persistState();
+    return;
+  }
   if (event.target.matches('[data-team-name-index]')) {
     const index = Number(event.target.dataset.teamNameIndex);
     state.draft.teamNames[index] = event.target.value;
@@ -2475,6 +3106,20 @@ function handleStepperButtons() {
       persistState();
     });
   }
+  if (dom.poolSizeMinusBtn) {
+    dom.poolSizeMinusBtn.addEventListener('click', () => {
+      state.draft.poolSize = clampNumber((state.draft.poolSize || 4) - 1, 3, 6, 4);
+      if (dom.poolSizeLabel) dom.poolSizeLabel.textContent = `${state.draft.poolSize}`;
+      if (dom.poolSizeInput) dom.poolSizeInput.value = state.draft.poolSize;
+      persistState();
+    });
+    dom.poolSizePlusBtn.addEventListener('click', () => {
+      state.draft.poolSize = clampNumber((state.draft.poolSize || 4) + 1, 3, 6, 4);
+      if (dom.poolSizeLabel) dom.poolSizeLabel.textContent = `${state.draft.poolSize}`;
+      if (dom.poolSizeInput) dom.poolSizeInput.value = state.draft.poolSize;
+      persistState();
+    });
+  }
 }
 
 /* === Initialisation === */
@@ -2482,6 +3127,7 @@ function handleStepperButtons() {
 function cacheDom() {
   dom.startNewTournamentBtn = document.getElementById('startNewTournamentBtn');
   dom.resumeSessionBtn = document.getElementById('resumeSessionBtn');
+  dom.classroomsBtn = document.getElementById('classroomsBtn');
   dom.lastStatsBtn = document.getElementById('lastStatsBtn');
   dom.newTournamentForm = document.getElementById('newTournamentForm');
   dom.formatCards = document.getElementById('formatCards');
@@ -2535,17 +3181,36 @@ function cacheDom() {
   dom.printSummaryBtn = document.getElementById('printSummaryBtn');
   dom.saveSummaryBtn = document.getElementById('saveSummaryBtn');
   dom.exportCsvBtn = document.getElementById('exportCsvBtn');
+  dom.addClassroomBtn = document.getElementById('addClassroomBtn');
+  dom.classroomsList = document.getElementById('classroomsList');
+  dom.classroomDetailTitle = document.getElementById('classroomDetailTitle');
+  dom.classroomDetailMeta = document.getElementById('classroomDetailMeta');
+  dom.classroomDetailContent = document.getElementById('classroomDetailContent');
   dom.challengeRangeBlock = document.getElementById('challengeRangeBlock');
   dom.challengeRangeInput = document.getElementById('challengeRangeInput');
   dom.challengeRangeLabel = document.getElementById('challengeRangeLabel');
   dom.challengeRangeMinusBtn = document.getElementById('challengeRangeMinusBtn');
   dom.challengeRangePlusBtn = document.getElementById('challengeRangePlusBtn');
+  dom.poolSizeBlock = document.getElementById('poolSizeBlock');
+  dom.poolSizeInput = document.getElementById('poolSizeInput');
+  dom.poolSizeLabel = document.getElementById('poolSizeLabel');
+  dom.poolSizeMinusBtn = document.getElementById('poolSizeMinusBtn');
+  dom.poolSizePlusBtn = document.getElementById('poolSizePlusBtn');
 }
 
 function bindEvents() {
   document.addEventListener('click', handleGlobalClick);
   document.addEventListener('input', handleGlobalInput);
   document.addEventListener('submit', handleGlobalSubmit);
+  const liveHeaderInfo = document.getElementById('liveHeaderInfo');
+  const liveHeader = document.getElementById('liveHeader');
+  if (liveHeaderInfo && liveHeader) {
+    liveHeaderInfo.addEventListener('click', () => {
+      liveHeader.classList.toggle('collapsed');
+    });
+  }
+  if (dom.classroomsBtn) dom.classroomsBtn.addEventListener('click', () => showView('classrooms'));
+  if (dom.addClassroomBtn) dom.addClassroomBtn.addEventListener('click', () => promptCreateClassroom());
   if (dom.liveHomeBtn) {
     dom.liveHomeBtn.addEventListener('click', () => {
       if (confirm('Revenir à l\'accueil ? Le tournoi en cours sera conservé dans "Reprendre une séance".')) {

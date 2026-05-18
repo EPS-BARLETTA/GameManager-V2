@@ -772,6 +772,9 @@ th {
 /* === MODE DÉFI === */
 .challenge-board {
   position: relative;
+  max-height: 60vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .challenge-list {
@@ -809,6 +812,16 @@ th {
 
 .challenge-row.challenge-target .challenge-rank {
   color: #ea580c;
+}
+
+.challenge-row.challenge-challenger {
+  border-color: #3b82f6;
+  background: rgba(59,130,246,0.10);
+  color: #1d4ed8;
+}
+
+.challenge-row.challenge-challenger .challenge-rank {
+  color: #2563eb;
 }
 
 .challenge-row.challenge-dimmed {
@@ -867,4 +880,94 @@ th {
   cursor: help;
   border-bottom: 1px dashed var(--border);
   text-decoration: none;
+}
+
+/* === HEADER LIVE COLLAPSIBLE === */
+.live-header.collapsed {
+  padding: 10px 22px;
+  min-height: 0;
+  align-items: center;
+}
+.live-header.collapsed #liveHeaderInfo h2,
+.live-header.collapsed #liveHeaderInfo p {
+  display: none;
+}
+.live-header.collapsed #liveHeaderInfo::after {
+  content: '▼ Afficher';
+  font-size: 0.82rem;
+  color: var(--text-soft);
+  font-weight: 600;
+}
+.live-header:not(.collapsed) #liveHeaderInfo::after {
+  content: '▲ Réduire';
+  font-size: 0.82rem;
+  color: var(--text-soft);
+  font-weight: 600;
+  display: block;
+  margin-top: 4px;
+}
+.live-header.collapsed .timer-card-wrapper {
+  display: none;
+}
+
+/* === COULEURS DES CLASSES === */
+.classroom-color-0 { --classroom-accent: #16a34a; --classroom-bg: rgba(22,163,74,0.10); }
+.classroom-color-1 { --classroom-accent: #2563eb; --classroom-bg: rgba(37,99,235,0.10); }
+.classroom-color-2 { --classroom-accent: #dc2626; --classroom-bg: rgba(220,38,38,0.10); }
+.classroom-color-3 { --classroom-accent: #d97706; --classroom-bg: rgba(217,119,6,0.10); }
+.classroom-color-4 { --classroom-accent: #7c3aed; --classroom-bg: rgba(124,58,237,0.10); }
+.classroom-color-5 { --classroom-accent: #0891b2; --classroom-bg: rgba(8,145,178,0.10); }
+.classroom-color-6 { --classroom-accent: #be185d; --classroom-bg: rgba(190,24,93,0.10); }
+.classroom-color-7 { --classroom-accent: #65a30d; --classroom-bg: rgba(101,163,13,0.10); }
+
+.classroom-card {
+  border-left: 6px solid var(--classroom-accent, var(--accent));
+  background: var(--classroom-bg, var(--surface));
+  border-radius: var(--radius-lg);
+  padding: 18px 20px;
+  margin-bottom: 16px;
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 12px;
+}
+.classroom-card h3 {
+  margin: 0;
+  font-size: 1.18rem;
+  color: var(--classroom-accent, var(--accent-dark));
+}
+.classroom-card .classroom-meta {
+  color: var(--text-soft);
+  font-size: 0.92rem;
+}
+.classroom-card .classroom-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.classroom-sport-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  background: var(--classroom-bg, var(--surface-muted));
+  color: var(--classroom-accent, var(--accent-dark));
+  margin-right: 8px;
+}
+.session-status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+.session-status-badge.ongoing {
+  background: rgba(234,88,12,0.12);
+  color: #c2410c;
+}
+.session-status-badge.completed {
+  background: rgba(22,163,74,0.12);
+  color: #15803d;
 }
