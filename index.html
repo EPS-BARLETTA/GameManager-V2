@@ -27,6 +27,7 @@
           <button class="btn btn-primary btn-xl" id="startNewTournamentBtn" type="button">▶ Nouveau tournoi</button>
           <button class="btn btn-secondary btn-lg" id="resumeSessionBtn" type="button">↩ Reprendre une séance</button>
           <button class="btn btn-secondary btn-lg" id="classroomsBtn" type="button">🏫 Mes classes</button>
+          <button class="btn btn-secondary btn-lg" id="helpBtn" type="button">❓ Mode d’emploi</button>
           <button class="btn btn-secondary btn-lg hidden" id="lastStatsBtn" type="button">📊 Dernière séance : Stats</button>
         </div>
       </section>
@@ -223,6 +224,8 @@
           </div>
         </section>
 
+        <div id="rotationStatusBanner" class="rotation-status-banner"></div>
+
         <div class="ranking-drawer hidden" id="rankingDrawer">
           <div class="ranking-drawer-head">
             <h3>Classement provisoire</h3>
@@ -286,6 +289,93 @@
         </header>
         <div id="classroomDetailContent"></div>
       </section>
+    </div>
+
+    <div class="help-modal hidden" id="helpModal">
+      <div class="help-modal-panel">
+        <div class="help-hero">
+          <div class="help-hero-copy">
+            <p class="help-hero-kicker">Coach EPS</p>
+            <h3>Bienvenue dans EPS Tournoi</h3>
+            <p>Organisez votre séance en quelques minutes 🏆</p>
+          </div>
+          <div class="help-hero-art" aria-hidden="true">
+            <span class="help-float-badge badge-one">⚽ Match</span>
+            <span class="help-float-badge badge-two">🏸 Rotation</span>
+            <span class="help-float-badge badge-three">⏱️ Chrono</span>
+            <span class="help-float-badge badge-four">📊 Classement</span>
+          </div>
+        </div>
+
+        <section class="help-quickstart">
+          <div class="panel-head compact">
+            <h4>Démarrage ultra rapide</h4>
+            <p>Le chemin le plus court pour lancer une séance au bord du terrain.</p>
+          </div>
+          <div class="help-steps">
+            <div class="help-step"><span>1️⃣</span><strong>Choisis ton sport</strong></div>
+            <div class="help-step"><span>2️⃣</span><strong>Indique les élèves</strong></div>
+            <div class="help-step"><span>3️⃣</span><strong>Lance le tournoi</strong></div>
+            <div class="help-step"><span>4️⃣</span><strong>Saisis les scores</strong></div>
+            <div class="help-step"><span>5️⃣</span><strong>Passe à la rotation suivante</strong></div>
+          </div>
+        </section>
+
+        <div class="help-tip-strip">
+          <span class="help-tip-pill tip-green">💡 Astuce EPS</span>
+          <span class="help-tip-pill tip-orange">🔥 Gain de temps</span>
+          <span class="help-tip-pill tip-blue">📱 Idéal sur tablette</span>
+          <span class="help-tip-pill tip-cyan">🏫 Parfait pour vidéo-projecteur</span>
+        </div>
+
+        <div class="help-faq">
+          <details class="help-card" open>
+            <summary><span class="help-card-icon">⚽</span><span>Comment lancer un tournoi rapidement ?</span></summary>
+            <div class="help-card-body"><div><p>Appuyez sur Nouveau tournoi, choisissez le sport, le format, les participants et les terrains, puis lancez. L’app est pensée pour aller vite, même quand la classe attend déjà.</p></div></div>
+          </details>
+          <details class="help-card">
+            <summary><span class="help-card-icon">⚽</span><span>Quelle différence entre Sports collectifs et Raquettes ?</span></summary>
+            <div class="help-card-body"><div><p>En sport collectif, on suit des équipes et leurs résultats. En raquettes, on suit des joueurs individuellement avec leur classement personnel et leur ratio de victoires.</p></div></div>
+          </details>
+          <div class="help-inline-note note-orange">💡 Astuce EPS : si vous voulez aller vite, commencez par le format le plus simple et laissez les options avancées fermées.</div>
+          <details class="help-card">
+            <summary><span class="help-card-icon">📊</span><span>Comment saisir les scores ?</span></summary>
+            <div class="help-card-body"><div><p>Utilisez les boutons + et − sur chaque terrain. Tant qu’un score n’est pas validé, il ne compte pas dans le classement de la rotation.</p></div></div>
+          </details>
+          <details class="help-card">
+            <summary><span class="help-card-icon">🤝</span><span>Comment valider un 0-0 ?</span></summary>
+            <div class="help-card-body"><div><p>Appuyez sur le bouton Valider 0-0 pour enregistrer explicitement un match nul sans point marqué. Cela permet de distinguer un vrai 0-0 d’un match non saisi.</p></div></div>
+          </details>
+          <details class="help-card">
+            <summary><span class="help-card-icon">🏁</span><span>Comment passer à la rotation suivante ?</span></summary>
+            <div class="help-card-body"><div><p>Quand tous les matchs sont saisis, le bandeau de rotation passe au vert. Vous pouvez alors utiliser Rotation suivante + reset chrono pour enchaîner proprement.</p></div></div>
+          </details>
+          <div class="help-inline-note note-blue">📱 Idéal sur tablette : gardez l’écran live ouvert et confiez la saisie des scores à un élève responsable ou à un arbitre.</div>
+          <details class="help-card">
+            <summary><span class="help-card-icon">⏱️</span><span>Comment utiliser le chrono ?</span></summary>
+            <div class="help-card-body"><div><p>Le chrono peut être démarré, mis en pause et réinitialisé à tout moment. Au passage à la rotation suivante, il revient prêt à démarrer pour le nouveau créneau.</p></div></div>
+          </details>
+          <details class="help-card">
+            <summary><span class="help-card-icon">🪜</span><span>Comment fonctionne la montée-descente ?</span></summary>
+            <div class="help-card-body"><div><p>Les gagnants montent, les perdants descendent. Une fois les scores validés, l’ordre des terrains est recalculé pour créer la rotation suivante.</p></div></div>
+          </details>
+          <details class="help-card">
+            <summary><span class="help-card-icon">📺</span><span>Comment projeter / imprimer ?</span></summary>
+            <div class="help-card-body"><div><p>Une fois la séance terminée, vous pouvez afficher les statistiques finales puis utiliser les actions d’impression ou d’export CSV pour partager les résultats.</p></div></div>
+          </details>
+          <details class="help-card">
+            <summary><span class="help-card-icon">🧑‍⚖️</span><span>Que faire si un élève est absent ou indisponible ?</span></summary>
+            <div class="help-card-body"><div><p>Ajustez le nombre de participants avant de lancer. L’application gère ensuite les repos, exemptions et rôles pour garder la séance fluide.</p></div></div>
+          </details>
+        </div>
+
+        <p class="help-footer-note">Conçu pour fonctionner vite, même au bord du terrain.</p>
+
+        <div class="classroom-actions help-final-actions">
+          <button class="btn btn-secondary btn-lg" id="closeHelpBtn" type="button">Fermer</button>
+          <button class="btn btn-primary btn-lg help-launch-btn" id="helpLaunchBtn" type="button">🚀 Je lance ma séance</button>
+        </div>
+      </div>
     </div>
 
     <script src="app.js" defer></script>

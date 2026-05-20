@@ -296,14 +296,12 @@ function createRoundRobinPairs(teamNames, options = {}) {
         away,
       });
     }
-    const roundReferee = options.rotatingReferee ? (byes[0] || previousReferee || null) : null;
-    if (roundReferee) {
-      matches.forEach(match => {
-        match.referee = roundReferee;
+    if (options.rotatingReferee) {
+      const refereePool = byes.length ? [...byes] : (previousReferee ? [previousReferee] : []);
+      matches.forEach((match, idx) => {
+        match.referee = refereePool[idx] || null;
       });
-    }
-    if (byes[0]) {
-      previousReferee = byes[0];
+      if (byes.length) previousReferee = byes[byes.length - 1];
     }
     rounds.push({ matches, byes });
     rest.unshift(rest.pop());
@@ -377,11 +375,13 @@ function assembleSchedule(entries, teams, options, metaExtras) {
 
 function buildSinglePoolSchedule(teams, options) {
   const rounds = createRoundRobinPairs(teams, options);
+  const enabledRoles = getEnabledRolesFromOptions(options);
   const entries = rounds.map((round, index) => ({
     phase: 'single',
     title: `Rotation ${index + 1}`,
     matches: round.matches.map(match => ({ ...match })),
     byes: [...round.byes],
+    byeAssignments: assignRolesForByes(round.byes, enabledRoles),
   }));
   return assembleSchedule(entries, teams, options, {
     format: 'round-robin',
@@ -532,6 +532,7 @@ function buildGroupedSchedule(groups, allTeams, options, extras = {}) {
       title: `Rotation ${entries.length + 1}`,
       matches,
       byes,
+      byeAssignments: assignRolesForByes(byes, getEnabledRolesFromOptions(options)),
     });
   }
   if (extras.finals && groups.length >= 2) {
@@ -590,31 +591,105 @@ function buildGroupPoolsRaquetteSchedule(teams, options) {
 
 function buildLadderRotation(order, rotationNumber, options) {
   const fieldCount = clampNumber(Number(options.fields) || 1, 1, 20, 1);
-  let activeCount = Math.min(order.length, fieldCount * 2);
-  if (activeCount % 2 === 1) activeCount -= 1;
-  if (activeCount < 2) activeCount = Math.min(2, order.length);
-  const activePlayers = order.slice(0, activeCount);
-  const byes = order.slice(activeCount);
-  const matches = [];
-  for (let index = 0; index < activePlayers.length; index += 2) {
-    const home = activePlayers[index];
-    const away = activePlayers[index + 1];
-    if (!home || !away) continue;
-    matches.push({
-      id: buildMatchKey(rotationNumber, home, away),
+  const useReferees = Boolean(options.rotatingReferee);
+  const n = order.length;
+
+  let arbitratedFields = 0;
+  let freeFields = 0;
+  let benchCount = 0;
+  let warningMessage = null;
+
+  if (useReferees) {
+    arbitratedFields = Math.min(fieldCount, Math.floor(n / 3));
+    const remainingPlayers = n - arbitratedFields * 3;
+    const possibleFreeFields = Math.floor(remainingPlayers / 2);
+    freeFields = Math.min(fieldCount - arbitratedFields, possibleFreeFields);
+    benchCount = n - arbitratedFields * 3 - freeFields * 2;
+
+    if (benchCount > 0) {
+      warningMessage = `⚠️ ${benchCount} élève(s) en attente cette rotation (nombre impair incompressible). Donnez-leur un rôle actif (observer, chronomètre, arbitre volant).`;
+    }
+  } else {
+    freeFields = Math.min(fieldCount, Math.floor(n / 2));
+    benchCount = n - freeFields * 2;
+    if (benchCount > 0) {
+      warningMessage = `⚠️ ${benchCount} élève(s) en attente (terrain insuffisant ou nombre impair). Donnez-leur un rôle actif.`;
+    }
+  }
+
+  const totalActiveFields = arbitratedFields + freeFields;
+
+  if (totalActiveFields < 1) {
+    return {
+      number: rotationNumber,
+      title: `Rotation ${rotationNumber}`,
+      phase: 'ladder',
+      matches: [],
+      byes: [...order],
+      byeAssignments: assignRolesForByes(order, getEnabledRolesFromOptions(options)),
+      orderSnapshot: [...order],
+      ladderSlots: [],
+      warningMessage: `⚠️ Pas assez de joueurs pour former un seul match.`,
+    };
+  }
+
+  const slots = [];
+  const usedPlayers = new Set();
+  let playerCursor = 0;
+
+  for (let f = 0; f < arbitratedFields; f++) {
+    const home = order[playerCursor];
+    const away = order[playerCursor + 1];
+    const referee = order[playerCursor + 2];
+    playerCursor += 3;
+    slots.push({ field: f + 1, home, away, referee, hasReferee: true });
+    usedPlayers.add(home);
+    usedPlayers.add(away);
+    usedPlayers.add(referee);
+  }
+
+  for (let f = 0; f < freeFields; f++) {
+    const home = order[playerCursor];
+    const away = order[playerCursor + 1];
+    playerCursor += 2;
+    slots.push({
+      field: arbitratedFields + f + 1,
       home,
       away,
-      field: matches.length + 1,
-      phase: 'ladder',
+      referee: null,
+      hasReferee: false,
     });
+    usedPlayers.add(home);
+    usedPlayers.add(away);
   }
+
+  const byes = order.filter(name => !usedPlayers.has(name));
+
+  const matches = slots.map(slot => ({
+    id: buildMatchKey(rotationNumber, slot.home, slot.away),
+    home: slot.home,
+    away: slot.away,
+    field: slot.field,
+    phase: 'ladder',
+    hasReferee: slot.hasReferee,
+    ...(slot.referee ? { ladderReferee: slot.referee } : {}),
+  }));
+
+  const enabledRoles = getEnabledRolesFromOptions(options);
+  const byeAssignments = assignRolesForByes(byes, enabledRoles);
+
   return {
     number: rotationNumber,
     title: `Rotation ${rotationNumber}`,
     phase: 'ladder',
     matches,
     byes,
+    byeAssignments,
     orderSnapshot: [...order],
+    ladderSlots: slots,
+    arbitratedFields,
+    freeFields,
+    warningMessage,
   };
 }
 
@@ -628,6 +703,7 @@ function buildLadderSchedule(teams, options) {
     ladder: {
       rotationTarget,
       latestOrder: [...teams],
+      currentSlots: firstRotation.ladderSlots || [],
     },
     meta: {
       format: 'ladder',
@@ -662,11 +738,14 @@ function buildChallengeBoard(teams, options) {
   };
 }
 
-function buildSwissRotation(roundNumber, matches, playerMap) {
+function buildSwissRotation(roundNumber, matches, playerMap, options = {}) {
+  const byeNames = matches.filter(m => m.bye).map(m => playerMap.get(m.p1Id)?.name).filter(Boolean);
+  const enabledRoles = getEnabledRolesFromOptions(options);
   return {
     number: roundNumber,
     title: `Ronde ${roundNumber}`,
     phase: 'swiss',
+    byeAssignments: assignRolesForByes(byeNames, enabledRoles),
     matches: matches.filter(match => !match.bye).map(match => ({
       id: match.id,
       home: playerMap.get(match.p1Id)?.name || '',
@@ -761,7 +840,7 @@ function initializeSwissMode(teams, options) {
   const maxRounds = clampNumber(Math.ceil(Math.log2(Math.max(players.length, 2))) + 1, 3, 8, 4);
   return {
     format: 'swiss',
-    rotations: [buildSwissRotation(1, currentMatches, playerMap)],
+    rotations: [buildSwissRotation(1, currentMatches, playerMap, options)],
     teams: teams.map(name => ({ name })),
     swiss: {
       round: 1,
@@ -1129,11 +1208,36 @@ function getCurrentRotation(session = state.currentSession, index = session?.cur
 }
 
 function getScoreRecord(session, matchId) {
-  return session?.scores?.[matchId] || null;
+  const record = session?.scores?.[matchId];
+  if (!record) return null;
+  if (record.confirmed === true) return record;
+  if (Number.isFinite(record.home) && Number.isFinite(record.away)) {
+    return {
+      ...record,
+      confirmed: true,
+    };
+  }
+  return null;
 }
 
 function isScoreComplete(record) {
-  return Number.isFinite(record?.home) && Number.isFinite(record?.away);
+  return Boolean(record && record.confirmed === true && Number.isFinite(record.home) && Number.isFinite(record.away));
+}
+
+function createExplicitScoreRecord(home, away) {
+  return {
+    home: Math.max(0, Number(home) || 0),
+    away: Math.max(0, Number(away) || 0),
+    confirmed: true,
+  };
+}
+
+function compareStandingsRows(left, right) {
+  if (right.points !== left.points) return right.points - left.points;
+  if (right.wins !== left.wins) return right.wins - left.wins;
+  if (right.goalDiff !== left.goalDiff) return right.goalDiff - left.goalDiff;
+  if (right.pointsFor !== left.pointsFor) return right.pointsFor - left.pointsFor;
+  return left.name.localeCompare(right.name, 'fr');
 }
 
 function getGroupMatchesForStandings(session, groupId) {
@@ -1253,10 +1357,7 @@ function computeTeamStandings(session, options = {}) {
     goalDiff: row.pointsFor - row.pointsAgainst,
   }));
   ranking.sort((left, right) => {
-    if (right.points !== left.points) return right.points - left.points;
-    if (right.goalDiff !== left.goalDiff) return right.goalDiff - left.goalDiff;
-    if (right.pointsFor !== left.pointsFor) return right.pointsFor - left.pointsFor;
-    return left.name.localeCompare(right.name, 'fr');
+    return compareStandingsRows(left, right);
   });
   if (ranking.length) {
     const bestAttack = Math.max(...ranking.map(row => row.pointsFor));
@@ -1264,7 +1365,6 @@ function computeTeamStandings(session, options = {}) {
     ranking.forEach(row => {
       if (row.pointsFor === bestAttack) row.badges.push('Meilleure attaque');
       if (row.pointsAgainst === bestDefense) row.badges.push('Meilleure défense');
-      if (row.pointsAgainst === bestDefense) row.badges.push('Fair-play');
     });
   }
   return ranking;
@@ -1319,10 +1419,7 @@ function computeRotatingPlayerStats(session) {
     ratio: row.played ? row.wins / row.played : 0,
   }));
   ranking.sort((left, right) => {
-    if (right.wins !== left.wins) return right.wins - left.wins;
-    if (right.points !== left.points) return right.points - left.points;
-    if (right.goalDiff !== left.goalDiff) return right.goalDiff - left.goalDiff;
-    return left.name.localeCompare(right.name, 'fr');
+    return compareStandingsRows(left, right);
   });
   if (ranking[0]) {
     ranking[0].badges.push('Meilleur joueur');
@@ -1352,11 +1449,11 @@ function computeIndividualStandings(session) {
       away.pointsAgainst += record.home;
       if (record.home > record.away) {
         home.wins += 1;
-        home.points += 1;
+        home.points += 3;
         away.losses += 1;
       } else if (record.away > record.home) {
         away.wins += 1;
-        away.points += 1;
+        away.points += 3;
         home.losses += 1;
       } else {
         home.draws += 1;
@@ -1372,10 +1469,7 @@ function computeIndividualStandings(session) {
     ratio: row.played ? row.wins / row.played : 0,
   }));
   ranking.sort((left, right) => {
-    if (right.points !== left.points) return right.points - left.points;
-    if (right.wins !== left.wins) return right.wins - left.wins;
-    if (right.goalDiff !== left.goalDiff) return right.goalDiff - left.goalDiff;
-    return left.name.localeCompare(right.name, 'fr');
+    return compareStandingsRows(left, right);
   });
   if (ranking[0]) {
     ranking[0].badges.push('Meilleur joueur');
@@ -1788,12 +1882,22 @@ function isCurrentRotationEditable(session, rotationIndex) {
 function adjustScore(matchId, side, delta) {
   const session = state.currentSession;
   if (!session) return;
-  const current = session.scores[matchId] || { home: 0, away: 0 };
-  const nextValue = Math.max(0, Number(current[side] || 0) + delta);
-  session.scores[matchId] = {
-    home: side === 'home' ? nextValue : Number(current.home || 0),
-    away: side === 'away' ? nextValue : Number(current.away || 0),
-  };
+  const current = getScoreRecord(session, matchId);
+  if (!current && delta < 0) return;
+  const base = current || createExplicitScoreRecord(0, 0);
+  const nextValue = Math.max(0, Number(base[side] || 0) + delta);
+  session.scores[matchId] = createExplicitScoreRecord(
+    side === 'home' ? nextValue : Number(base.home || 0),
+    side === 'away' ? nextValue : Number(base.away || 0)
+  );
+  saveSessionLocally(session);
+  renderLiveView();
+}
+
+function validateZeroScore(matchId) {
+  const session = state.currentSession;
+  if (!session) return;
+  session.scores[matchId] = createExplicitScoreRecord(0, 0);
   saveSessionLocally(session);
   renderLiveView();
 }
@@ -1802,11 +1906,11 @@ function setRotatingOutcome(matchId, outcome) {
   const session = state.currentSession;
   if (!session) return;
   if (outcome === 'home') {
-    session.scores[matchId] = { home: 1, away: 0 };
+    session.scores[matchId] = createExplicitScoreRecord(1, 0);
   } else if (outcome === 'away') {
-    session.scores[matchId] = { home: 0, away: 1 };
+    session.scores[matchId] = createExplicitScoreRecord(0, 1);
   } else {
-    session.scores[matchId] = { home: 1, away: 1 };
+    session.scores[matchId] = createExplicitScoreRecord(1, 1);
   }
   saveSessionLocally(session);
   renderLiveView();
@@ -1871,29 +1975,36 @@ function renderLiveMatches(session) {
   }
   const editable = isCurrentRotationEditable(session, session.currentRotation);
   const enabledRoles = getEnabledRolesFromOptions(session.options || {});
-  const exemptPlayers = [...(rotation.byes || [])];
+  const exemptSet = new Set(rotation.byes || []);
   const byeAssignments = Array.isArray(rotation.byeAssignments) && rotation.byeAssignments.length
     ? rotation.byeAssignments
-    : assignRolesForByes(exemptPlayers, enabledRoles);
+    : assignRolesForByes([...exemptSet], enabledRoles);
   const visibleMatches = rotation.matches.filter(match => {
     const p = resolveMatchParticipants(match, session);
-    if (p.home === 'Exempt') { exemptPlayers.push(p.away); return false; }
-    if (p.away === 'Exempt') { exemptPlayers.push(p.home); return false; }
+    if (p.home === 'Exempt') { exemptSet.add(p.away); return false; }
+    if (p.away === 'Exempt') { exemptSet.add(p.home); return false; }
     return true;
   });
+  const exemptPlayers = [...exemptSet];
 
   const matchesHtml = visibleMatches.map(match => {
     const participants = resolveMatchParticipants(match, session);
-    const record = session.scores[match.id] || { home: 0, away: 0 };
-    const complete = isScoreComplete(getScoreRecord(session, match.id));
+    const record = getScoreRecord(session, match.id);
+    const complete = isScoreComplete(record);
     const subtitle = match.groupLabel ? `${match.groupLabel}` : rotation.title;
+    const terrainBadge = session.format === 'ladder'
+      ? (match.hasReferee
+        ? `<span style="font-size:0.75rem;padding:2px 8px;border-radius:999px;background:rgba(249,115,22,0.12);color:#c2410c;border:1px solid rgba(249,115,22,0.25);font-weight:700;">Arbitré</span>`
+        : `<span style="font-size:0.75rem;padding:2px 8px;border-radius:999px;background:rgba(148,163,184,0.12);color:var(--text-soft);border:1px solid rgba(148,163,184,0.25);font-weight:700;">Libre</span>`)
+      : '';
     if (session.format === 'rotating-teams') {
-      const selectedOutcome = record.home > record.away ? 'home' : record.away > record.home ? 'away' : isScoreComplete(record) ? 'draw' : '';
+      const selectedOutcome = complete ? (record.home > record.away ? 'home' : record.away > record.home ? 'away' : 'draw') : '';
       return `
         <article class="live-card ${complete ? '' : 'live-card--incomplete'}">
           <div class="live-card-head">
             <div>
               <p class="section-kicker">Terrain ${match.field}</p>
+              ${terrainBadge}
               <h3>${escapeHtml(subtitle)}</h3>
             </div>
           </div>
@@ -1910,23 +2021,28 @@ function renderLiveMatches(session) {
     }
     const displayHome = session.sport === 'raquette' ? formatDisplayName(participants.home) : participants.home;
     const displayAway = session.sport === 'raquette' ? formatDisplayName(participants.away) : participants.away;
+    const homeScore = record ? record.home : '—';
+    const awayScore = record ? record.away : '—';
+    const zeroValidated = complete && record.home === 0 && record.away === 0;
     const extraInfo = [
       match.referee ? `<p style="margin:10px 0 0;color:#c2410c;font-weight:700;">🟠 Arbitre : ${escapeHtml(match.referee)}</p>` : '',
       match.ladderReferee ? `<p style="margin:10px 0 0;color:#c2410c;font-weight:700;">🟠 Arbitre : ${escapeHtml(formatDisplayName(match.ladderReferee))}</p>` : '',
       match.swissNote ? `<p style="margin:10px 0 0;color:var(--text-soft);font-style:italic;">${escapeHtml(match.swissNote)}</p>` : '',
+      zeroValidated ? '<p class="score-status-badge confirmed-draw">0-0 validé</p>' : '',
     ].filter(Boolean).join('');
     return `
       <article class="live-card ${complete ? '' : 'live-card--incomplete'}">
         <div class="live-card-head">
           <div>
             <p class="section-kicker">Terrain ${match.field}</p>
+            ${terrainBadge}
             <h3>${escapeHtml(subtitle)}</h3>
           </div>
         </div>
         <div class="score-row">
           <div class="score-name">${escapeHtml(displayHome)}</div>
           <button class="score-btn" type="button" data-score-step="-1" data-score-side="home" data-match-id="${match.id}" ${editable && !participants.unresolved ? '' : 'disabled'}>−</button>
-          <div class="score-value">${record.home ?? 0}</div>
+          <div class="score-value">${homeScore}</div>
           <button class="score-btn" type="button" data-score-step="1" data-score-side="home" data-match-id="${match.id}" ${editable && !participants.unresolved ? '' : 'disabled'}>+</button>
           <div></div>
         </div>
@@ -1934,21 +2050,27 @@ function renderLiveMatches(session) {
         <div class="score-row">
           <div class="score-name">${escapeHtml(displayAway)}</div>
           <button class="score-btn" type="button" data-score-step="-1" data-score-side="away" data-match-id="${match.id}" ${editable && !participants.unresolved ? '' : 'disabled'}>−</button>
-          <div class="score-value">${record.away ?? 0}</div>
+          <div class="score-value">${awayScore}</div>
           <button class="score-btn" type="button" data-score-step="1" data-score-side="away" data-match-id="${match.id}" ${editable && !participants.unresolved ? '' : 'disabled'}>+</button>
           <div></div>
+        </div>
+        <div class="live-card-actions">
+          <button class="btn btn-secondary btn-sm" type="button" data-score-zero="${match.id}" ${editable && !participants.unresolved ? '' : 'disabled'}>Valider 0-0</button>
         </div>
         ${extraInfo}
       </article>
     `;
   }).join('');
 
-  const effectiveByeAssignments = session.format === 'rotating-teams'
-    ? (rotation.byeAssignments || byeAssignments)
-    : assignRolesForByes(exemptPlayers, enabledRoles);
+  const effectiveByeAssignments =
+    (Array.isArray(rotation.byeAssignments) && rotation.byeAssignments.length)
+      ? rotation.byeAssignments
+      : assignRolesForByes(exemptPlayers, enabledRoles);
   const exemptHtml = renderByeAssignmentsBlock(effectiveByeAssignments, session);
-
-  dom.liveMatches.innerHTML = matchesHtml + exemptHtml;
+  const warningHtml = rotation.warningMessage
+    ? `<div style="margin-bottom:12px;padding:12px 16px;border-radius:14px;background:#fef9c3;border:1px solid #ca8a04;color:#92400e;font-weight:700;">${escapeHtml(rotation.warningMessage)}</div>`
+    : '';
+  dom.liveMatches.innerHTML = warningHtml + matchesHtml + exemptHtml;
 }
 
 function renderChallengeLive(session) {
@@ -2179,6 +2301,7 @@ function renderChallengeLive(session) {
 
 function renderLiveView() {
   const session = state.currentSession;
+  const rotationStatusBanner = document.getElementById('rotationStatusBanner');
   if (!session) {
     showView('home');
     return;
@@ -2189,6 +2312,7 @@ function renderLiveView() {
     if (timerCard) timerCard.style.display = 'none';
     if (dom.prevRotationBtn) dom.prevRotationBtn.style.display = 'none';
     if (dom.nextRotationBtn) dom.nextRotationBtn.style.display = 'none';
+    if (rotationStatusBanner) rotationStatusBanner.className = 'rotation-status-banner hidden';
     return;
   }
   const timerCard = document.querySelector('.timer-card');
@@ -2200,7 +2324,7 @@ function renderLiveView() {
   dom.timerPauseBtn.disabled = false;
   dom.timerResetBtn.disabled = false;
   dom.prevRotationBtn.disabled = false;
-  dom.nextRotationBtn.textContent = 'Rotation suivante →';
+  dom.nextRotationBtn.textContent = 'Rotation suivante + reset chrono';
   dom.nextRotationBtn.onclick = null;
   dom.liveModeLabel.textContent = TOURNAMENT_MODES[session.format]?.label || session.format;
   dom.liveSessionTitle.textContent = session.name;
@@ -2209,6 +2333,11 @@ function renderLiveView() {
     : 'Aucune rotation';
   renderTimer();
   renderLiveMatches(session);
+  if (rotationStatusBanner) {
+    const complete = isRotationComplete(session);
+    rotationStatusBanner.className = `rotation-status-banner ${complete ? 'complete' : 'pending'}`;
+    rotationStatusBanner.textContent = complete ? 'Rotation complète' : 'Scores à compléter';
+  }
   if (session.format === 'swiss') {
     dom.liveMatches.insertAdjacentHTML('afterbegin', '<div style="margin-bottom:16px;padding:12px 16px;border-radius:14px;background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.2);color:#1e3a8a;font-size:0.95rem;">🇨🇭 Ronde suisse : chaque rotation oppose des joueurs de niveau similaire. Après chaque round, les paires sont recalculées.</div>');
   }
@@ -2226,47 +2355,199 @@ function appendNextLadderRotation(session) {
   if (!currentRotation) return false;
   const nextNumber = session.schedule.rotations.length + 1;
   if (nextNumber > session.schedule.ladder.rotationTarget) return false;
-  let order = currentRotation.orderSnapshot ? [...currentRotation.orderSnapshot] : [...session.schedule.ladder.latestOrder];
-  const activeCount = Math.min(order.length, Math.max(2, session.options.fields * 2 - ((session.options.fields * 2) % 2)));
-  const activePlayers = order.slice(0, activeCount);
-  const bench = order.slice(activeCount);
-  const promotedReferees = new Map();
-  for (let index = 0; index < activePlayers.length; index += 2) {
-    const home = activePlayers[index];
-    const away = activePlayers[index + 1];
-    const match = currentRotation.matches.find(entry => entry.home === home && entry.away === away) || currentRotation.matches.find(entry => entry.home === away && entry.away === home);
+  const useReferees = Boolean(session.options.rotatingReferee);
+  const allPlayers = session.schedule.teams.map(t => t.name);
+  const currentSlots = currentRotation.ladderSlots || [];
+
+  const results = currentSlots.map(slot => {
+    const match = currentRotation.matches.find(m => m.field === slot.field);
     const record = match ? getScoreRecord(session, match.id) : null;
-    if (!match || !isScoreComplete(record)) continue;
-    const homeWon = record.home > record.away;
-    const awayWon = record.away > record.home;
-    if (awayWon) {
-      promotedReferees.set(match.field, away);
-      activePlayers[index] = away;
-      activePlayers[index + 1] = home;
-    } else if (!homeWon && !awayWon) {
-      const temp = activePlayers[index];
-      activePlayers[index] = activePlayers[index + 1];
-      activePlayers[index + 1] = temp;
+    const scored = isScoreComplete(record);
+    let winner = null;
+    let loser = null;
+    if (scored && record.home !== record.away) {
+      winner = record.home > record.away ? slot.home : slot.away;
+      loser = record.home > record.away ? slot.away : slot.home;
     }
-  }
-  if (bench.length) {
-    const outgoing = activePlayers.pop();
-    const incoming = bench.shift();
-    if (incoming) {
-      activePlayers.push(incoming);
-      bench.push(outgoing);
-    }
-  }
-  order = [...activePlayers, ...bench];
-  session.schedule.ladder.latestOrder = [...order];
-  const nextRotation = buildLadderRotation(order, nextNumber, session.options);
-  nextRotation.matches.forEach(match => {
-    if (promotedReferees.has(match.field)) {
-      match.ladderReferee = promotedReferees.get(match.field);
-    }
+    return {
+      field: slot.field,
+      home: slot.home,
+      away: slot.away,
+      referee: slot.referee || null,
+      hasReferee: slot.hasReferee !== false && Boolean(slot.referee),
+      winner,
+      loser,
+      draw: scored && record.home === record.away,
+    };
   });
+
+  const arbitratedResults = results.filter(r => r.hasReferee);
+  const freeResults = results.filter(r => !r.hasReferee);
+  const nextSlots = [];
+
+  for (let i = 0; i < arbitratedResults.length; i++) {
+    const curr = arbitratedResults[i];
+    const above = i > 0 ? arbitratedResults[i - 1] : null;
+    const below = i < arbitratedResults.length - 1 ? arbitratedResults[i + 1] : null;
+    const isTop = i === 0;
+    const isBottom = i === arbitratedResults.length - 1;
+
+    if (curr.draw) {
+      nextSlots.push({
+        field: curr.field,
+        home: curr.home,
+        away: curr.away,
+        referee: curr.referee,
+        hasReferee: true,
+      });
+      continue;
+    }
+
+    const nextReferee = isTop
+      ? curr.winner
+      : (below && !below.draw ? below.winner : null);
+    const nextHome = curr.referee;
+    const nextAway = isTop
+      ? (below && !below.draw ? below.winner : null)
+      : (above && !above.draw ? above.loser : null);
+
+    nextSlots.push({
+      field: curr.field,
+      home: nextHome || null,
+      away: nextAway || null,
+      referee: nextReferee || null,
+      hasReferee: true,
+    });
+  }
+
+  for (let j = 0; j < freeResults.length; j++) {
+    const curr = freeResults[j];
+    const prevFree = j > 0 ? freeResults[j - 1] : null;
+
+    if (curr.draw) {
+      nextSlots.push({
+        field: curr.field,
+        home: curr.home,
+        away: curr.away,
+        referee: null,
+        hasReferee: false,
+      });
+      continue;
+    }
+
+    nextSlots.push({
+      field: curr.field,
+      home: curr.referee || null,
+      away: curr.loser,
+      referee: null,
+      hasReferee: false,
+    });
+  }
+
+  for (let i = 1; i < arbitratedResults.length; i++) {
+    const gagnant = arbitratedResults[i].draw ? null : arbitratedResults[i].winner;
+    if (!gagnant) continue;
+    const slotCible = nextSlots[i - 1];
+    if (slotCible && slotCible.home === null) {
+      slotCible.home = gagnant;
+    }
+  }
+
+  for (let j = 1; j < freeResults.length; j++) {
+    const gagnant = freeResults[j].draw ? null : freeResults[j].winner;
+    if (!gagnant) continue;
+    const slotCible = nextSlots[arbitratedResults.length + j - 1];
+    if (slotCible && slotCible.home === null) {
+      slotCible.home = gagnant;
+    }
+  }
+
+  const usedSoFar = new Set(
+    nextSlots.flatMap(s => [s.home, s.away, s.referee].filter(Boolean))
+  );
+  const entrants = allPlayers.filter(name => !usedSoFar.has(name));
+
+  for (let i = nextSlots.length - 1; i >= 0; i--) {
+    const slot = nextSlots[i];
+    if (slot.home === null && entrants.length) {
+      slot.home = entrants.shift();
+      usedSoFar.add(slot.home);
+    }
+    if (slot.away === null && entrants.length) {
+      slot.away = entrants.shift();
+      usedSoFar.add(slot.away);
+    }
+    if (slot.hasReferee && slot.referee === null && entrants.length) {
+      slot.referee = entrants.shift();
+      usedSoFar.add(slot.referee);
+    }
+  }
+
+  if (typeof console !== 'undefined') {
+    const prevFieldMap = {};
+    for (const slot of currentSlots) {
+      if (slot.home) prevFieldMap[slot.home] = slot.field;
+      if (slot.away) prevFieldMap[slot.away] = slot.field;
+      if (slot.referee) prevFieldMap[slot.referee] = slot.field;
+    }
+    for (const slot of nextSlots) {
+      for (const name of [slot.home, slot.away, slot.referee].filter(Boolean)) {
+        const prev = prevFieldMap[name];
+        if (prev !== undefined && Math.abs(slot.field - prev) > 1) {
+          console.warn(`[LADDER ±1 VIOLATION] ${name} : T${prev} → T${slot.field}`);
+        }
+      }
+    }
+  }
+
+  const usedFinal = new Set(
+    nextSlots.flatMap(s => [s.home, s.away, s.referee].filter(Boolean))
+  );
+  const newBench = allPlayers.filter(name => !usedFinal.has(name));
+
+  let warningMessage = null;
+  if (newBench.length > 0) {
+    warningMessage = `⚠️ ${newBench.length} élève(s) en attente (nombre impair incompressible). Donnez-leur un rôle actif.`;
+  }
+
+  const enabledRoles = getEnabledRolesFromOptions(session.options);
+  const byeAssignments = useReferees
+    ? newBench.map(name => ({ name, role: 'Spectateur actif' }))
+    : assignRolesForByes(newBench, enabledRoles);
+
+  const matches = nextSlots
+    .filter(slot => slot.home && slot.away)
+    .map(slot => ({
+      id: buildMatchKey(nextNumber, slot.home, slot.away),
+      home: slot.home,
+      away: slot.away,
+      field: slot.field,
+      phase: 'ladder',
+      hasReferee: slot.hasReferee,
+      ...(slot.referee ? { ladderReferee: slot.referee } : {}),
+    }));
+
+  const newOrder = [
+    ...nextSlots.flatMap(s => [s.home, s.away, s.referee].filter(Boolean)),
+    ...newBench,
+  ];
+
+  const nextRotation = {
+    number: nextNumber,
+    title: `Rotation ${nextNumber}`,
+    phase: 'ladder',
+    matches,
+    byes: newBench,
+    byeAssignments,
+    orderSnapshot: newOrder,
+    ladderSlots: nextSlots,
+    warningMessage,
+  };
+
+  session.schedule.ladder.currentSlots = nextSlots;
+  session.schedule.ladder.latestOrder = newOrder;
   session.schedule.rotations.push(nextRotation);
-  session.schedule.meta.matchCount += nextRotation.matches.length;
+  session.schedule.meta.matchCount += matches.length;
   return true;
 }
 
@@ -2295,11 +2576,11 @@ function appendNextSwissRotation(session) {
     p2.opponents.push(p1.id);
     if (record.home > record.away) {
       p1.wins += 1;
-      p1.points += 1;
+      p1.points += 3;
       p2.losses += 1;
     } else {
       p2.wins += 1;
-      p2.points += 1;
+      p2.points += 3;
       p1.losses += 1;
     }
   });
@@ -2311,7 +2592,7 @@ function appendNextSwissRotation(session) {
     id: match.bye ? `swiss-bye-${swiss.round}-${match.p1Id}` : `swiss-${swiss.round}-${index + 1}`,
   }));
   const playerMap = new Map(swiss.players.map(player => [player.id, player]));
-  session.schedule.rotations.push(buildSwissRotation(swiss.round, swiss.currentMatches, playerMap));
+  session.schedule.rotations.push(buildSwissRotation(swiss.round, swiss.currentMatches, playerMap, session.options));
   session.schedule.meta.rotationCount = swiss.maxRounds;
   session.schedule.meta.matchCount += swiss.currentMatches.filter(match => !match.bye).length;
   return true;
@@ -2901,6 +3182,12 @@ function handleGlobalClick(event) {
     return;
   }
 
+  const zeroScoreButton = event.target.closest('[data-score-zero]');
+  if (zeroScoreButton) {
+    validateZeroScore(zeroScoreButton.dataset.scoreZero);
+    return;
+  }
+
   const rotatingOutcomeButton = event.target.closest('[data-rotating-outcome]');
   if (rotatingOutcomeButton) {
     setRotatingOutcome(rotatingOutcomeButton.dataset.matchId, rotatingOutcomeButton.dataset.rotatingOutcome);
@@ -2924,6 +3211,15 @@ function handleGlobalClick(event) {
 
   if (event.target === dom.startNewTournamentBtn) {
     showView('new');
+    return;
+  }
+  if (event.target === dom.helpBtn) {
+    dom.helpModal?.classList.remove('hidden');
+    return;
+  }
+  if (event.target === dom.closeHelpBtn || event.target === dom.helpLaunchBtn) {
+    dom.helpModal?.classList.add('hidden');
+    if (event.target === dom.helpLaunchBtn) showView('new');
     return;
   }
   if (event.target === dom.resumeSessionBtn) {
@@ -3128,7 +3424,11 @@ function cacheDom() {
   dom.startNewTournamentBtn = document.getElementById('startNewTournamentBtn');
   dom.resumeSessionBtn = document.getElementById('resumeSessionBtn');
   dom.classroomsBtn = document.getElementById('classroomsBtn');
+  dom.helpBtn = document.getElementById('helpBtn');
   dom.lastStatsBtn = document.getElementById('lastStatsBtn');
+  dom.helpModal = document.getElementById('helpModal');
+  dom.closeHelpBtn = document.getElementById('closeHelpBtn');
+  dom.helpLaunchBtn = document.getElementById('helpLaunchBtn');
   dom.newTournamentForm = document.getElementById('newTournamentForm');
   dom.formatCards = document.getElementById('formatCards');
   dom.participantCountInput = document.getElementById('participantCountInput');
@@ -3210,6 +3510,13 @@ function bindEvents() {
     });
   }
   if (dom.classroomsBtn) dom.classroomsBtn.addEventListener('click', () => showView('classrooms'));
+  if (dom.helpModal) {
+    dom.helpModal.addEventListener('click', event => {
+      if (event.target === dom.helpModal) {
+        dom.helpModal.classList.add('hidden');
+      }
+    });
+  }
   if (dom.addClassroomBtn) dom.addClassroomBtn.addEventListener('click', () => promptCreateClassroom());
   if (dom.liveHomeBtn) {
     dom.liveHomeBtn.addEventListener('click', () => {

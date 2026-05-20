@@ -23,3 +23,12 @@
 - Ajouter un guidage spécifique sports de raquette (sets/cibles multiples, gestion du score cible automatique).
 - Rendre la projection accessible directement depuis les résultats (CTA secondaire) et permettre d’épingler le mode projection/chrono sur un écran secondaire.
 - Proposer une personnalisation avancée de l’impression (sélection rapide des vues à imprimer, ajout du logo de l’établissement, signatures des rôles).
+
+## Correctifs terrain
+- Harmonisation des points de classement : victoire = 3, nul = 1, défaite = 0 pour les classements équipe, individuel et poules tournantes.
+- Suppression du faux badge « Fair-play » basé sur la défense ; seuls les badges « Meilleure attaque » et « Meilleure défense » restent.
+- Fin des scores 0-0 fantômes : un match ne compte que si un score a été saisi ou validé explicitement, y compris via le bouton « Valider 0-0 ».
+- Ajout d’un bandeau de statut de rotation : « Scores à compléter » ou « Rotation complète ».
+- Bouton live renommé en « Rotation suivante + reset chrono », avec remise à zéro du chrono avant la rotation suivante.
+- Sécurisation du parcours live et du ladder sans comptabiliser de matchs non saisis.
+- Ajout d’un bouton « ❓ Mode d’emploi » sur l’accueil avec modale FAQ mobile-friendly.
