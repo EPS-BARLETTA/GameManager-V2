@@ -373,21 +373,705 @@ function assembleSchedule(entries, teams, options, metaExtras) {
   };
 }
 
+function validateRotationCapacity(rotations, fieldCount, format = '') {
+  const safeFieldCount = Math.max(1, Number(fieldCount) || 1);
+  (rotations || []).forEach((rotation, index) => {
+    const matches = Array.isArray(rotation?.matches) ? rotation.matches : [];
+    if (matches.length > safeFieldCount) {
+      console.warn(`[validateRotationCapacity] ${format || 'schedule'} rotation ${index + 1} contient ${matches.length} matchs pour ${safeFieldCount} terrain(s).`);
+    }
+    const fields = new Set();
+    const participants = new Set();
+    matches.forEach(match => {
+      if (match.field != null) {
+        if (fields.has(match.field)) {
+          console.warn(`[validateRotationCapacity] ${format || 'schedule'} rotation ${index + 1} réutilise le terrain ${match.field}.`);
+        }
+        fields.add(match.field);
+      }
+      const names = [
+        match.home,
+        match.away,
+        ...(match.homePlayers || []),
+        ...(match.awayPlayers || []),
+      ].filter(Boolean);
+      names.forEach(name => {
+        if (participants.has(name)) {
+          console.warn(`[validateRotationCapacity] ${format || 'schedule'} rotation ${index + 1} duplique ${name}.`);
+        }
+        participants.add(name);
+      });
+    });
+  });
+}
+
+function validateRotationRoles(rotation, format = '') {
+  const matches = Array.isArray(rotation?.matches) ? rotation.matches : [];
+  const byeAssignments = Array.isArray(rotation?.byeAssignments) ? rotation.byeAssignments : [];
+  const activeParticipants = new Set();
+  const embeddedReferees = [];
+  matches.forEach(match => {
+    [
+      match.home,
+      match.away,
+      ...(match.homePlayers || []),
+      ...(match.awayPlayers || []),
+    ].filter(Boolean).forEach(name => activeParticipants.add(name));
+    [match.referee, match.ladderReferee].filter(Boolean).forEach(name => embeddedReferees.push(name));
+  });
+  let invalidRefereeCount = 0;
+  let invalidTableCount = 0;
+  let duplicateRoleCount = 0;
+  const roleOwners = new Set();
+  embeddedReferees.forEach(name => {
+    if (roleOwners.has(name)) {
+      duplicateRoleCount += 1;
+      console.warn(`[validateRotationRoles] ${format || 'rotation'} ${rotation.number || '?'} attribue plusieurs rôles à ${name}.`);
+    }
+    roleOwners.add(name);
+    if (activeParticipants.has(name)) {
+      invalidRefereeCount += 1;
+      console.warn(`[validateRotationRoles] ${format || 'rotation'} ${rotation.number || '?'} assigne arbitre invalide : ${name} joue déjà dans cette rotation.`);
+    }
+  });
+  byeAssignments.forEach(entry => {
+    if (!entry?.name || !entry?.role) return;
+    if (roleOwners.has(entry.name)) {
+      duplicateRoleCount += 1;
+      console.warn(`[validateRotationRoles] ${format || 'rotation'} ${rotation.number || '?'} attribue plusieurs rôles à ${entry.name}.`);
+    }
+    roleOwners.add(entry.name);
+    if (activeParticipants.has(entry.name)) {
+      if (entry.role === 'Arbitre') {
+        invalidRefereeCount += 1;
+        console.warn(`[validateRotationRoles] ${format || 'rotation'} ${rotation.number || '?'} assigne arbitre invalide : ${entry.name} joue déjà dans cette rotation.`);
+      }
+      if (entry.role === 'Table') {
+        invalidTableCount += 1;
+        console.warn(`[validateRotationRoles] ${format || 'rotation'} ${rotation.number || '?'} assigne table invalide : ${entry.name} joue déjà dans cette rotation.`);
+      }
+    }
+  });
+  return { invalidRefereeCount, invalidTableCount, duplicateRoleCount };
+}
+
+function validateRotationByes(rotation, participants = [], format = '') {
+  const allParticipants = Array.isArray(participants) ? [...new Set(participants.filter(Boolean))] : [];
+  const matches = Array.isArray(rotation?.matches) ? rotation.matches : [];
+  const unresolvedMatches = matches.some(match => match.seedHome || match.seedAway || match.placeholderHome || match.placeholderAway);
+  const activeParticipants = new Set();
+  const sociallyAssignedParticipants = new Set();
+  matches.forEach(match => {
+    [
+      match.home,
+      match.away,
+      ...(match.homePlayers || []),
+      ...(match.awayPlayers || []),
+    ].filter(Boolean).forEach(name => activeParticipants.add(name));
+    [match.referee, match.ladderReferee].filter(Boolean).forEach(name => sociallyAssignedParticipants.add(name));
+  });
+  const byeParticipants = new Set((rotation?.byes || []).filter(Boolean));
+  const invalidByeNames = new Set();
+  const bothActiveAndByeNames = new Set();
+  const invalidRoleNames = new Set();
+
+  byeParticipants.forEach(name => {
+    if (activeParticipants.has(name)) {
+      bothActiveAndByeNames.add(name);
+      invalidByeNames.add(name);
+      console.warn(`[validateRotationByes] ${format || 'rotation'} ${rotation.number || '?'} : ${name} est à la fois en match et au repos.`);
+    }
+  });
+
+  if (!unresolvedMatches && allParticipants.length) {
+    allParticipants.forEach(name => {
+      if (!activeParticipants.has(name) && !byeParticipants.has(name) && !sociallyAssignedParticipants.has(name)) {
+        invalidByeNames.add(name);
+        console.warn(`[validateRotationByes] ${format || 'rotation'} ${rotation.number || '?'} : repos/byes manquant pour ${name}.`);
+      }
+    });
+  }
+
+  (rotation?.byeAssignments || []).forEach(entry => {
+    if (!entry?.name) return;
+    sociallyAssignedParticipants.add(entry.name);
+    if (activeParticipants.has(entry.name)) {
+      invalidRoleNames.add(entry.name);
+      console.warn(`[validateRotationByes] ${format || 'rotation'} ${rotation.number || '?'} : rôle social invalide pour ${entry.name}, déjà en match.`);
+    }
+    if (!byeParticipants.has(entry.name)) {
+      invalidByeNames.add(entry.name);
+      console.warn(`[validateRotationByes] ${format || 'rotation'} ${rotation.number || '?'} : ${entry.name} a un rôle de repos mais n'est pas dans byes.`);
+    }
+  });
+
+  return {
+    activeParticipants: [...activeParticipants],
+    byeParticipants: [...byeParticipants],
+    invalidByeCount: invalidByeNames.size,
+    playerBothActiveAndByeCount: bothActiveAndByeNames.size,
+    invalidRoleFromActiveCount: invalidRoleNames.size,
+  };
+}
+
+function computeParticipationStats(schedule, participants = []) {
+  const names = Array.isArray(participants) && participants.length
+    ? [...new Set(participants.filter(Boolean))]
+    : ((schedule?.rotatingTeams?.players || schedule?.teams || [])
+      .map(entry => typeof entry === 'string' ? entry : entry?.name)
+      .filter(Boolean));
+  const playedByParticipant = Object.fromEntries(names.map(name => [name, 0]));
+  (schedule?.rotations || []).forEach(rotation => {
+    (rotation?.matches || []).forEach(match => {
+      [
+        match.home,
+        match.away,
+        ...(match.homePlayers || []),
+        ...(match.awayPlayers || []),
+      ].filter(Boolean).forEach(name => {
+        if (!(name in playedByParticipant)) playedByParticipant[name] = 0;
+        playedByParticipant[name] += 1;
+      });
+    });
+  });
+  const values = Object.values(playedByParticipant);
+  const minMatches = values.length ? Math.min(...values) : 0;
+  const maxMatches = values.length ? Math.max(...values) : 0;
+  return {
+    playedByParticipant,
+    minMatches,
+    maxMatches,
+    spread: maxMatches - minMatches,
+  };
+}
+
+function validateParticipationFairness(schedule, participants = [], options = {}) {
+  const stats = computeParticipationStats(schedule, participants);
+  const format = schedule?.format || '';
+  const isBalancedMode = ['round-robin', 'rotating-teams', 'swiss'].includes(format);
+  const warnings = [];
+  if (isBalancedMode && stats.spread > 1) {
+    const message = `${format} présente un écart de participation de ${stats.spread} match(s) entre joueurs/équipes.`;
+    warnings.push(message);
+    console.warn(`[validateParticipationFairness] ${message}`);
+  } else if (isBalancedMode && stats.spread === 1) {
+    const message = `${format} présente une légère imperfection d'équité (écart de 1 match).`;
+    warnings.push(message);
+    console.warn(`[validateParticipationFairness] ${message}`);
+  }
+  if (stats.minMatches === 0 && stats.maxMatches > 1 && isBalancedMode) {
+    const message = `${format} laisse au moins un participant sans match alors que d'autres en ont ${stats.maxMatches}.`;
+    warnings.push(message);
+    console.warn(`[validateParticipationFairness] ${message}`);
+  }
+  return {
+    ...stats,
+    valid: warnings.length === 0,
+    warnings,
+  };
+}
+
+function validateTournamentSchedule(schedule, options = {}) {
+  const result = {
+    valid: true,
+    errors: [],
+    warnings: [],
+  };
+  if (!schedule || !Array.isArray(schedule.rotations)) {
+    result.valid = false;
+    result.errors.push('Schedule invalide : rotations absentes.');
+    console.error('[validateTournamentSchedule] Schedule invalide : rotations absentes.');
+    return result;
+  }
+  const uniqueIds = validateUniqueMatchIds(schedule);
+  if (!uniqueIds.valid) {
+    result.valid = false;
+    result.errors.push(...uniqueIds.errors);
+  }
+  const fieldCount = Math.max(1, Number(options.fields ?? schedule.meta?.fieldCount) || 1);
+  const allParticipants = (schedule.rotatingTeams?.players || schedule.teams || [])
+    .map(entry => typeof entry === 'string' ? entry : entry?.name)
+    .filter(Boolean);
+  const enabledRoles = getEnabledRolesFromOptions(options);
+  const knownMatchIds = new Set(schedule.rotations.flatMap(rotation => (rotation.matches || []).map(match => match.id).filter(Boolean)));
+  Object.entries(options.scores || {}).forEach(([matchId, record]) => {
+    if (!knownMatchIds.has(matchId)) {
+      const message = `score attaché à un match inexistant : ${matchId}.`;
+      result.valid = false;
+      result.errors.push(message);
+      console.error(`[validateTournamentSchedule] ${message}`);
+      return;
+    }
+    if (record && typeof record === 'object') {
+      const hasScores = Number.isFinite(record.home) && Number.isFinite(record.away);
+      const isValidated = record.confirmed === true || record.validated === true;
+      if (hasScores && !isValidated) {
+        const message = `score numérique non confirmé pour ${matchId}.`;
+        result.warnings.push(message);
+      }
+    }
+  });
+  schedule.rotations.forEach((rotation, rotationIndex) => {
+    const label = `${schedule.format || 'schedule'} rotation ${rotationIndex + 1}`;
+    const matches = Array.isArray(rotation?.matches) ? rotation.matches : [];
+    if (matches.length > fieldCount) {
+      const message = `${label} contient ${matches.length} matchs pour ${fieldCount} terrain(s).`;
+      result.valid = false;
+      result.errors.push(message);
+      console.error(`[validateTournamentSchedule] ${message}`);
+    }
+    const seenParticipants = new Set();
+    const usedFields = new Set();
+    matches.forEach((match, matchIndex) => {
+      if (match.field != null) {
+        if (usedFields.has(match.field)) {
+          const message = `${label} duplique le terrain ${match.field}.`;
+          result.valid = false;
+          result.errors.push(message);
+          console.error(`[validateTournamentSchedule] ${message}`);
+        }
+        usedFields.add(match.field);
+      }
+      const homeSide = [
+        match.home,
+        ...(match.homePlayers || []),
+      ].filter(Boolean);
+      const awaySide = [
+        match.away,
+        ...(match.awayPlayers || []),
+      ].filter(Boolean);
+      if (match.home && match.away && match.home === match.away) {
+        const message = `${label} match ${matchIndex + 1} oppose ${match.home} à lui-même.`;
+        result.valid = false;
+        result.errors.push(message);
+        console.error(`[validateTournamentSchedule] ${message}`);
+      }
+      const overlap = homeSide.filter(name => awaySide.includes(name));
+      overlap.forEach(name => {
+        const message = `${label} match ${matchIndex + 1} oppose ${name} à lui-même.`;
+        result.valid = false;
+        result.errors.push(message);
+        console.error(`[validateTournamentSchedule] ${message}`);
+      });
+      [...homeSide, ...awaySide].forEach(name => {
+        if (seenParticipants.has(name)) {
+          const message = `${label} duplique ${name} dans la même rotation.`;
+          result.valid = false;
+          result.errors.push(message);
+          console.error(`[validateTournamentSchedule] ${message}`);
+        }
+        seenParticipants.add(name);
+      });
+    });
+    const roleOwners = new Set();
+    matches.forEach(match => {
+      [match.referee, match.ladderReferee].filter(Boolean).forEach(name => {
+        if (seenParticipants.has(name)) {
+          const message = `${label} assigne arbitre invalide : ${name} joue déjà.`;
+          result.valid = false;
+          result.errors.push(message);
+          console.error(`[validateTournamentSchedule] ${message}`);
+        }
+        if (roleOwners.has(name)) {
+          const message = `${label} attribue plusieurs rôles sociaux à ${name}.`;
+          result.valid = false;
+          result.errors.push(message);
+          console.error(`[validateTournamentSchedule] ${message}`);
+        }
+        roleOwners.add(name);
+      });
+    });
+    (rotation.byeAssignments || []).forEach(entry => {
+      if (!entry?.name || !entry?.role) return;
+      if (seenParticipants.has(entry.name) && entry.role === 'Arbitre') {
+        const message = `${label} assigne arbitre invalide : ${entry.name} joue déjà.`;
+        result.valid = false;
+        result.errors.push(message);
+        console.error(`[validateTournamentSchedule] ${message}`);
+      }
+      if (seenParticipants.has(entry.name) && entry.role === 'Table') {
+        const message = `${label} assigne table invalide : ${entry.name} joue déjà.`;
+        result.valid = false;
+        result.errors.push(message);
+        console.error(`[validateTournamentSchedule] ${message}`);
+      }
+      if (roleOwners.has(entry.name)) {
+        const message = `${label} attribue plusieurs rôles sociaux à ${entry.name}.`;
+        result.valid = false;
+        result.errors.push(message);
+        console.error(`[validateTournamentSchedule] ${message}`);
+      }
+      roleOwners.add(entry.name);
+    });
+    if (enabledRoles.includes('Arbitre')) {
+      const hasReferee = matches.some(match => match.referee || match.ladderReferee) || (rotation.byeAssignments || []).some(entry => entry.role === 'Arbitre');
+      if (!hasReferee) {
+        result.warnings.push(`${label} n'a pas d'arbitre disponible.`);
+      }
+    }
+    if (enabledRoles.includes('Table')) {
+      const hasTable = (rotation.byeAssignments || []).some(entry => entry.role === 'Table');
+      if (!hasTable) {
+        result.warnings.push(`${label} n'a pas de table disponible.`);
+      }
+    }
+    const roleCounts = validateRotationRoles(rotation, schedule.format || '');
+    if (roleCounts.invalidRefereeCount || roleCounts.invalidTableCount || roleCounts.duplicateRoleCount) {
+      result.valid = false;
+    }
+    const byeCounts = validateRotationByes(rotation, allParticipants, schedule.format || '');
+    if (byeCounts.invalidByeCount || byeCounts.playerBothActiveAndByeCount || byeCounts.invalidRoleFromActiveCount) {
+      result.valid = false;
+    }
+  });
+  const fairness = validateParticipationFairness(schedule, allParticipants, options);
+  result.warnings.push(...fairness.warnings);
+  if (!result.valid) {
+    console.error(`[validateTournamentSchedule] Planning invalide : ${result.errors.join(' | ')}`);
+  }
+  if (result.warnings.length) {
+    console.warn(`[validateTournamentSchedule] Warnings : ${result.warnings.join(' | ')}`);
+  }
+  return result;
+}
+
+function runScheduleStressAudit(config = {}) {
+  const participantMin = clampNumber(Number(config.participantMin) || 4, 4, 48, 4);
+  const participantMax = clampNumber(Number(config.participantMax) || 48, participantMin, 48, 48);
+  const fieldMin = clampNumber(Number(config.fieldMin) || 1, 1, 20, 1);
+  const fieldMax = clampNumber(Number(config.fieldMax) || 20, fieldMin, 20, 20);
+  const refereeValues = Array.isArray(config.refereeValues) && config.refereeValues.length ? config.refereeValues : [false, true];
+  const tableValues = Array.isArray(config.tableValues) && config.tableValues.length ? config.tableValues : [false, true];
+  const cases = [
+    { sport: 'sport-co', format: 'round-robin' },
+    { sport: 'sport-co', format: 'groups-finals' },
+    { sport: 'sport-co', format: 'rotating-teams' },
+    { sport: 'raquette', format: 'round-robin' },
+    { sport: 'raquette', format: 'swiss' },
+    { sport: 'raquette', format: 'ladder' },
+    { sport: 'raquette', format: 'challenge' },
+  ];
+  const summary = {
+    totalConfigs: 0,
+    validConfigs: 0,
+    invalidConfigs: 0,
+    topErrors: [],
+    topWarnings: [],
+    brokenFormats: {},
+    examples: [],
+    cases: [],
+  };
+  const errorCounts = new Map();
+  const warningCounts = new Map();
+  const exampleByError = new Map();
+  const originalWarn = console.warn;
+  const originalError = console.error;
+  const capturedLogs = [];
+  console.warn = (...args) => {
+    capturedLogs.push({ level: 'warn', message: args.map(String).join(' ') });
+  };
+  console.error = (...args) => {
+    capturedLogs.push({ level: 'error', message: args.map(String).join(' ') });
+  };
+  try {
+    for (const entry of cases) {
+      for (let participantCount = participantMin; participantCount <= participantMax; participantCount += 1) {
+        for (let fields = fieldMin; fields <= fieldMax; fields += 1) {
+          for (const rotatingReferee of refereeValues) {
+            for (const scoreTable of tableValues) {
+              const teamNames = Array.from({ length: participantCount }, (_, index) => `${entry.sport === 'sport-co' ? 'Equipe' : 'Joueur'} ${index + 1}`);
+              const options = {
+                sport: entry.sport,
+                format: entry.format,
+                fields,
+                rotatingReferee: Boolean(rotatingReferee),
+                scoreTable: Boolean(scoreTable),
+                duration: 7,
+                practiceType: 'competition',
+                teamSize: 2,
+                organization: 'pools',
+                challengeRange: 5,
+                poolSize: 4,
+              };
+              const auditCase = {
+                sport: entry.sport,
+                format: entry.format,
+                participantCount,
+                fields,
+                rotatingReferee: Boolean(rotatingReferee),
+                scoreTable: Boolean(scoreTable),
+              };
+              summary.totalConfigs += 1;
+              try {
+                const schedule = generateSchedule(teamNames, options);
+                const validation = validateTournamentSchedule(schedule, options);
+                if (validation.valid) {
+                  summary.validConfigs += 1;
+                } else {
+                  summary.invalidConfigs += 1;
+                  summary.brokenFormats[entry.format] = (summary.brokenFormats[entry.format] || 0) + 1;
+                }
+                const effectiveErrors = validation.errors.length
+                  ? validation.errors
+                  : (validation.valid ? [] : ['Planning invalide sans erreur structurée explicite']);
+                effectiveErrors.forEach(message => {
+                  errorCounts.set(message, (errorCounts.get(message) || 0) + 1);
+                  const existing = exampleByError.get(message);
+                  if (!existing || participantCount < existing.participantCount || (participantCount === existing.participantCount && fields < existing.fields)) {
+                    exampleByError.set(message, { ...auditCase, message });
+                  }
+                });
+                validation.warnings.forEach(message => {
+                  warningCounts.set(message, (warningCounts.get(message) || 0) + 1);
+                });
+              } catch (error) {
+                summary.invalidConfigs += 1;
+                summary.brokenFormats[entry.format] = (summary.brokenFormats[entry.format] || 0) + 1;
+                const message = `Exception: ${error?.message || error}`;
+                errorCounts.set(message, (errorCounts.get(message) || 0) + 1);
+                const existing = exampleByError.get(message);
+                if (!existing || participantCount < existing.participantCount || (participantCount === existing.participantCount && fields < existing.fields)) {
+                  exampleByError.set(message, { ...auditCase, message });
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } finally {
+    console.warn = originalWarn;
+    console.error = originalError;
+  }
+  summary.topErrors = [...errorCounts.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 10)
+    .map(([message, count]) => ({ message, count }));
+  summary.topWarnings = [...warningCounts.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 10)
+    .map(([message, count]) => ({ message, count }));
+  summary.examples = [...exampleByError.values()]
+    .sort((left, right) => left.participantCount - right.participantCount || left.fields - right.fields)
+    .slice(0, 10);
+  summary.cases = capturedLogs.slice(0, 50);
+  originalWarn('[runScheduleStressAudit] Résumé', {
+    totalConfigs: summary.totalConfigs,
+    validConfigs: summary.validConfigs,
+    invalidConfigs: summary.invalidConfigs,
+    topErrors: summary.topErrors,
+    topWarnings: summary.topWarnings,
+    brokenFormats: Object.entries(summary.brokenFormats).sort((left, right) => right[1] - left[1]),
+    examples: summary.examples,
+  });
+  return summary;
+}
+
+function buildDeterministicMatchId(rotation, match, fallbackIndex = 0) {
+  const phase = match?.phase || rotation?.phase || 'match';
+  const rotationKey = rotation?.number || fallbackIndex + 1;
+  const homeKey = match?.home
+    || (Array.isArray(match?.homePlayers) ? match.homePlayers.join('-') : '')
+    || (match?.swissP1Id ? `p${match.swissP1Id}` : '')
+    || 'home';
+  const awayKey = match?.away
+    || (Array.isArray(match?.awayPlayers) ? match.awayPlayers.join('-') : '')
+    || (match?.swissP2Id ? `p${match.swissP2Id}` : '')
+    || 'away';
+  const groupKey = match?.groupId || match?.poolId || '';
+  return `m-${rotationKey}-${phase}-${encodeURIComponent(groupKey)}-${encodeURIComponent(homeKey)}-${encodeURIComponent(awayKey)}`;
+}
+
+function ensureStableMatchIds(schedule) {
+  if (!schedule || !Array.isArray(schedule.rotations)) return schedule;
+  const seen = new Map();
+  schedule.rotations.forEach((rotation, rotationIndex) => {
+    if (!Array.isArray(rotation?.matches)) return;
+    rotation.matches.forEach((match, matchIndex) => {
+      let nextId = match?.id || buildDeterministicMatchId(rotation, match, matchIndex);
+      if (!match?.id) {
+        match.id = nextId;
+      }
+      if (seen.has(nextId)) {
+        const previous = seen.get(nextId);
+        console.error(`[validateUniqueMatchIds] doublon détecté pour ${nextId} entre rotation ${previous.rotation} match ${previous.match} et rotation ${rotation.number || rotationIndex + 1} match ${matchIndex + 1}.`);
+        let suffix = 2;
+        while (seen.has(`${nextId}--${suffix}`)) suffix += 1;
+        nextId = `${nextId}--${suffix}`;
+        match.id = nextId;
+      }
+      seen.set(match.id, {
+        rotation: rotation.number || rotationIndex + 1,
+        match: matchIndex + 1,
+      });
+    });
+  });
+  return schedule;
+}
+
+function validateUniqueMatchIds(schedule) {
+  const result = {
+    valid: true,
+    errors: [],
+  };
+  if (!schedule || !Array.isArray(schedule.rotations)) return result;
+  const seen = new Map();
+  schedule.rotations.forEach((rotation, rotationIndex) => {
+    (rotation.matches || []).forEach((match, matchIndex) => {
+      if (!match?.id) {
+        const message = `rotation ${rotation.number || rotationIndex + 1} match ${matchIndex + 1} sans id`;
+        result.valid = false;
+        result.errors.push(message);
+        console.error(`[validateUniqueMatchIds] ${message}.`);
+        return;
+      }
+      if (seen.has(match.id)) {
+        const previous = seen.get(match.id);
+        const message = `doublon ${match.id} entre rotation ${previous.rotation} match ${previous.match} et rotation ${rotation.number || rotationIndex + 1} match ${matchIndex + 1}`;
+        result.valid = false;
+        result.errors.push(message);
+        console.error(`[validateUniqueMatchIds] ${message}.`);
+        return;
+      }
+      seen.set(match.id, {
+        rotation: rotation.number || rotationIndex + 1,
+        match: matchIndex + 1,
+      });
+    });
+  });
+  return result;
+}
+
+function splitRotationIntoWaves(rotation, fieldCount, enabledRoles = null) {
+  const safeFieldCount = Math.max(1, Number(fieldCount) || 1);
+  const matches = Array.isArray(rotation?.matches) ? rotation.matches : [];
+  const inferredRoles = Array.isArray(enabledRoles) && enabledRoles.length
+    ? enabledRoles
+    : [...new Set((rotation?.byeAssignments || []).map(entry => entry?.role).filter(role => role && role !== 'Spectateur actif'))];
+  const fullParticipantSet = new Set([
+    ...(rotation?.byes || []),
+    ...matches.flatMap(match => [
+      match.home,
+      match.away,
+      ...(match.homePlayers || []),
+      ...(match.awayPlayers || []),
+    ].filter(Boolean)),
+  ]);
+  const buildWave = slice => {
+    const activeParticipants = new Set(slice.flatMap(match => [
+      match.home,
+      match.away,
+      ...(match.homePlayers || []),
+      ...(match.awayPlayers || []),
+    ].filter(Boolean)));
+    const embeddedRoleOwners = new Set(slice.flatMap(match => [
+      match.referee,
+      match.ladderReferee,
+    ].filter(Boolean)));
+    const waveByes = [...fullParticipantSet].filter(name => !activeParticipants.has(name));
+    const preservedAssignments = [];
+    const preservedNames = new Set(embeddedRoleOwners);
+    (rotation?.byeAssignments || []).forEach(entry => {
+      if (!entry?.name || !entry?.role) return;
+      if (!waveByes.includes(entry.name)) return;
+      if (activeParticipants.has(entry.name)) return;
+      if (embeddedRoleOwners.has(entry.name)) return;
+      if (preservedNames.has(entry.name)) return;
+      preservedAssignments.push({ ...entry });
+      preservedNames.add(entry.name);
+    });
+    const remainingCandidates = waveByes.filter(name => !preservedNames.has(name));
+    const generatedAssignments = assignRolesForByes(remainingCandidates, inferredRoles);
+    if (inferredRoles.includes('Arbitre') && ![...preservedAssignments, ...generatedAssignments].some(entry => entry.role === 'Arbitre')) {
+      console.warn(`[splitRotationIntoWaves] ${rotation.title || 'Rotation'} n'a aucun arbitre disponible sur cette vague.`);
+    }
+    if (inferredRoles.includes('Table') && ![...preservedAssignments, ...generatedAssignments].some(entry => entry.role === 'Table')) {
+      console.warn(`[splitRotationIntoWaves] ${rotation.title || 'Rotation'} n'a aucune table disponible sur cette vague.`);
+    }
+    const wave = {
+      ...rotation,
+      matches: slice.map((match, index) => ({ ...match, field: index + 1 })),
+      byes: waveByes,
+      byeAssignments: [...preservedAssignments, ...generatedAssignments],
+    };
+    validateRotationByes(wave, [...fullParticipantSet], rotation?.phase || '');
+    return wave;
+  };
+  if (matches.length <= safeFieldCount) {
+    const wave = buildWave(matches);
+    validateRotationRoles(wave, rotation?.phase || '');
+    return [wave];
+  }
+  const waves = [];
+  for (let index = 0; index < matches.length; index += safeFieldCount) {
+    const slice = matches.slice(index, index + safeFieldCount);
+    const wave = buildWave(slice);
+    validateRotationRoles(wave, rotation?.phase || '');
+    waves.push(wave);
+  }
+  return waves;
+}
+
 function buildSinglePoolSchedule(teams, options) {
   const rounds = createRoundRobinPairs(teams, options);
   const enabledRoles = getEnabledRolesFromOptions(options);
-  const entries = rounds.map((round, index) => ({
-    phase: 'single',
-    title: `Rotation ${index + 1}`,
-    matches: round.matches.map(match => ({ ...match })),
-    byes: [...round.byes],
-    byeAssignments: assignRolesForByes(round.byes, enabledRoles),
-  }));
-  return assembleSchedule(entries, teams, options, {
-    format: 'round-robin',
-    formatLabel: TOURNAMENT_MODES['round-robin'].label,
-    groups: [],
+  const fieldCount = clampNumber(Number(options.fields) || 1, 1, 20, 1);
+  const rotations = [];
+  let rotationNumber = 1;
+  let totalMatches = 0;
+  let clock = parseTime(options.startTime);
+  rounds.forEach((round, index) => {
+    const waves = splitRotationIntoWaves({
+      number: index + 1,
+      title: `Rotation ${index + 1}`,
+      phase: 'single',
+      matches: round.matches.map(match => ({ ...match })),
+      byes: [...round.byes],
+      byeAssignments: assignRolesForByes(round.byes, enabledRoles),
+    }, fieldCount, enabledRoles);
+    waves.forEach(wave => {
+      const startLabel = clock == null ? '' : formatTimeLabel(clock);
+      const endLabel = clock == null ? '' : formatTimeLabel(clock + Number(options.duration || 7));
+      const preparedMatches = (wave.matches || []).map((match, matchIndex) => {
+        totalMatches += 1;
+        return {
+          ...match,
+          field: match.field || matchIndex + 1,
+          phase: match.phase || 'single',
+          groupId: match.groupId || null,
+          groupLabel: match.groupLabel || null,
+        };
+      });
+      rotations.push({
+        ...wave,
+        number: rotationNumber,
+        title: `Rotation ${rotationNumber}`,
+        startLabel,
+        endLabel,
+        matches: preparedMatches,
+      });
+      rotationNumber += 1;
+      if (clock != null) {
+        clock += Number(options.duration || 7);
+      }
+    });
   });
+  return {
+    format: 'round-robin',
+    rotations,
+    teams: teams.map(name => ({ name })),
+    groups: [],
+    meta: {
+      format: 'round-robin',
+      formatLabel: TOURNAMENT_MODES['round-robin'].label,
+      teamCount: teams.length,
+      matchCount: totalMatches,
+      fieldCount,
+      rotationCount: rotations.length,
+      practiceType: options.practiceType,
+      durationMinutes: Number(options.duration || 7),
+    },
+  };
 }
 
 function distributeIntoGroups(teamNames, options = {}) {
@@ -516,7 +1200,10 @@ function buildGroupedSchedule(groups, allTeams, options, extras = {}) {
     const byes = [];
     groupedRounds.forEach(group => {
       const round = group.rounds[roundIndex];
-      if (!round) return;
+      if (!round) {
+        byes.push(...group.teams);
+        return;
+      }
       round.matches.forEach(match => {
         matches.push({
           ...match,
@@ -538,12 +1225,78 @@ function buildGroupedSchedule(groups, allTeams, options, extras = {}) {
   if (extras.finals && groups.length >= 2) {
     entries.push(...buildFinalEntries(groups));
   }
-  return assembleSchedule(entries, allTeams, options, {
+  const fieldCount = clampNumber(Number(options.fields) || 1, 1, 20, 1);
+  const enabledRoles = getEnabledRolesFromOptions(options);
+  const rotations = [];
+  let rotationNumber = 1;
+  let totalMatches = 0;
+  let clock = parseTime(options.startTime);
+  entries.forEach(entry => {
+    const waves = entry.phase === 'groups'
+      ? splitRotationIntoWaves({
+          number: rotationNumber,
+          title: entry.title || `Rotation ${rotationNumber}`,
+          phase: entry.phase,
+          groupId: entry.groupId || null,
+          groupLabel: entry.groupLabel || null,
+          matches: entry.matches.map(match => ({ ...match })),
+          byes: [...(entry.byes || [])],
+          byeAssignments: Array.isArray(entry.byeAssignments) ? structuredClone(entry.byeAssignments) : [],
+        }, fieldCount, enabledRoles)
+      : [{
+          number: rotationNumber,
+          title: entry.title || `Rotation ${rotationNumber}`,
+          phase: entry.phase,
+          groupId: entry.groupId || null,
+          groupLabel: entry.groupLabel || null,
+          matches: entry.matches.map(match => ({ ...match })),
+          byes: [...(entry.byes || [])],
+          byeAssignments: Array.isArray(entry.byeAssignments) ? structuredClone(entry.byeAssignments) : [],
+        }];
+    waves.forEach(wave => {
+      const startLabel = clock == null ? '' : formatTimeLabel(clock);
+      const endLabel = clock == null ? '' : formatTimeLabel(clock + Number(options.duration || 7));
+      const preparedMatches = (wave.matches || []).map((match, matchIndex) => {
+        totalMatches += 1;
+        return {
+          ...match,
+          field: match.field || matchIndex + 1,
+          phase: match.phase || entry.phase || (extras.finals ? 'groups-finals' : 'groups'),
+          groupId: match.groupId || entry.groupId || null,
+          groupLabel: match.groupLabel || entry.groupLabel || null,
+        };
+      });
+      rotations.push({
+        ...wave,
+        number: rotationNumber,
+        title: wave.title || `Rotation ${rotationNumber}`,
+        startLabel,
+        endLabel,
+        matches: preparedMatches,
+      });
+      rotationNumber += 1;
+      if (clock != null) {
+        clock += Number(options.duration || 7);
+      }
+    });
+  });
+  return {
     format: extras.finals ? 'groups-finals' : 'groups',
-    formatLabel: extras.finals ? TOURNAMENT_MODES['groups-finals'].label : 'Groupes',
+    rotations,
+    teams: allTeams.map(name => ({ name })),
     groups,
     finals: extras.finals ? { enabled: true } : null,
-  });
+    meta: {
+      format: extras.finals ? 'groups-finals' : 'groups',
+      formatLabel: extras.finals ? TOURNAMENT_MODES['groups-finals'].label : 'Groupes',
+      teamCount: allTeams.length,
+      matchCount: totalMatches,
+      fieldCount,
+      rotationCount: rotations.length,
+      practiceType: options.practiceType,
+      durationMinutes: Number(options.duration || 7),
+    },
+  };
 }
 
 function buildGroupPoolsRaquetteSchedule(teams, options) {
@@ -718,6 +1471,35 @@ function buildLadderSchedule(teams, options) {
   };
 }
 
+function validateLadderMovement(previousRotation, nextRotation) {
+  const previousSlots = Array.isArray(previousRotation?.ladderSlots) ? previousRotation.ladderSlots : [];
+  const nextSlots = Array.isArray(nextRotation?.ladderSlots)
+    ? nextRotation.ladderSlots
+    : Array.isArray(nextRotation)
+      ? nextRotation
+      : [];
+  const previousFieldMap = new Map();
+  previousSlots.forEach(slot => {
+    [slot.home, slot.away, slot.referee].filter(Boolean).forEach(name => previousFieldMap.set(name, slot.field));
+  });
+  const nextFieldMap = new Map();
+  nextSlots.forEach(slot => {
+    [slot.home, slot.away, slot.referee].filter(Boolean).forEach(name => nextFieldMap.set(name, slot.field));
+  });
+  const violations = [];
+  previousFieldMap.forEach((field, name) => {
+    if (!nextFieldMap.has(name)) return;
+    const nextField = nextFieldMap.get(name);
+    if (Math.abs(nextField - field) > 1) {
+      violations.push({ name, from: field, to: nextField });
+    }
+  });
+  return {
+    valid: violations.length === 0,
+    violations,
+  };
+}
+
 function buildChallengeBoard(teams, options) {
   const orderedTeams = teams.map((name, index) => ({ name, rank: index + 1 }));
   return {
@@ -838,9 +1620,12 @@ function initializeSwissMode(teams, options) {
   const currentMatches = generateSwissPairings(players, []);
   const playerMap = new Map(players.map(player => [player.id, player]));
   const maxRounds = clampNumber(Math.ceil(Math.log2(Math.max(players.length, 2))) + 1, 3, 8, 4);
+  const rotations = splitRotationIntoWaves(buildSwissRotation(1, currentMatches, playerMap, options), options.fields, getEnabledRolesFromOptions(options));
+  validateRotationCapacity(rotations, options.fields, 'swiss');
+  rotations.forEach(rotation => validateRotationRoles(rotation, 'swiss'));
   return {
     format: 'swiss',
-    rotations: [buildSwissRotation(1, currentMatches, playerMap, options)],
+    rotations,
     teams: teams.map(name => ({ name })),
     swiss: {
       round: 1,
@@ -864,29 +1649,28 @@ function initializeSwissMode(teams, options) {
 
 function buildIntraPoolRotations(poolPlayers, teamSize, targetRotations) {
   const rotations = [];
-  const usablePlayerCount = Math.floor(poolPlayers.length / teamSize) * teamSize;
-  const usablePlayers = poolPlayers.slice(0, usablePlayerCount);
-  const fixedByes = poolPlayers.slice(usablePlayerCount);
-  const n = usablePlayers.length;
-  const teamsPerRotation = Math.floor(n / teamSize);
-  if (!teamsPerRotation) {
+  const teamCount = Math.floor(poolPlayers.length / teamSize);
+  const activeTeamCount = teamCount - (teamCount % 2);
+  const activePlayerCount = activeTeamCount * teamSize;
+  if (!activeTeamCount) {
     return Array.from({ length: targetRotations }, () => ({ matches: [], byes: [...poolPlayers] }));
   }
   for (let rotationIndex = 0; rotationIndex < targetRotations; rotationIndex += 1) {
-    const rotated = n > 1 ? [usablePlayers[0]] : [...usablePlayers];
-    for (let index = 1; index < n; index += 1) {
-      rotated.push(usablePlayers[1 + ((index - 1 + rotationIndex) % (n - 1))]);
-    }
+    const shiftedPlayers = poolPlayers.length > activePlayerCount
+      ? [
+          ...poolPlayers.slice(rotationIndex % poolPlayers.length),
+          ...poolPlayers.slice(0, rotationIndex % poolPlayers.length),
+        ]
+      : [...poolPlayers];
+    const activePlayers = shiftedPlayers.slice(0, activePlayerCount);
+    const byes = shiftedPlayers.slice(activePlayerCount);
     const matches = [];
-    const byes = [...fixedByes];
-    for (let teamIndex = 0; teamIndex < teamsPerRotation; teamIndex += 2) {
-      if (teamIndex + 1 >= teamsPerRotation) {
-        byes.push(...rotated.slice(teamIndex * teamSize, (teamIndex + 1) * teamSize));
-        break;
+    for (let index = 0; index < activePlayers.length; index += teamSize * 2) {
+      const homePlayers = activePlayers.slice(index, index + teamSize);
+      const awayPlayers = activePlayers.slice(index + teamSize, index + teamSize * 2);
+      if (homePlayers.length === teamSize && awayPlayers.length === teamSize) {
+        matches.push({ homePlayers, awayPlayers });
       }
-      const home = rotated.slice(teamIndex * teamSize, (teamIndex + 1) * teamSize);
-      const away = rotated.slice((teamIndex + 1) * teamSize, (teamIndex + 2) * teamSize);
-      matches.push({ homePlayers: home, awayPlayers: away });
     }
     rotations.push({ matches, byes });
   }
@@ -927,10 +1711,35 @@ function generateRotatingTeamsSchedule(teams, options) {
   const names = [...teams];
   const teamSize = clampNumber(Number(options.teamSize) || 3, 2, 8, 3);
   const minPlayersPerPool = teamSize * 2;
-  let poolCount = options.organization === 'full-random'
+  const maxPoolCount = options.organization === 'full-random'
     ? 1
     : Math.max(1, Math.min(Number(options.fields) || 1, Math.floor(names.length / minPlayersPerPool) || 1));
-  poolCount = Math.max(1, poolCount);
+  let poolCount = Math.max(1, maxPoolCount);
+  if (options.organization !== 'full-random') {
+    const scoredPoolCounts = [];
+    for (let candidate = 1; candidate <= maxPoolCount; candidate += 1) {
+      const basePoolSize = Math.floor(names.length / candidate);
+      const remainder = names.length % candidate;
+      const sizes = Array.from({ length: candidate }, (_, index) => basePoolSize + (index < remainder ? 1 : 0));
+      const activeRatios = sizes.map(size => {
+        const teamCount = Math.floor(size / teamSize);
+        const activeTeamCount = teamCount - (teamCount % 2);
+        const activePlayers = activeTeamCount * teamSize;
+        return size ? activePlayers / size : 0;
+      });
+      scoredPoolCounts.push({
+        candidate,
+        spread: Math.max(...activeRatios) - Math.min(...activeRatios),
+        inactive: sizes.reduce((sum, size) => {
+          const teamCount = Math.floor(size / teamSize);
+          const activeTeamCount = teamCount - (teamCount % 2);
+          return sum + (size - activeTeamCount * teamSize);
+        }, 0),
+      });
+    }
+    scoredPoolCounts.sort((left, right) => left.spread - right.spread || left.inactive - right.inactive || left.candidate - right.candidate);
+    poolCount = scoredPoolCounts[0]?.candidate || poolCount;
+  }
   const pools = [];
   const basePoolSize = Math.floor(names.length / poolCount);
   const remainder = names.length % poolCount;
@@ -948,6 +1757,7 @@ function generateRotatingTeamsSchedule(teams, options) {
   const rotationsByPool = pools.map(pool => buildIntraPoolRotations(pool.players, teamSize, targetRotations));
   const enabledRoles = getEnabledRolesFromOptions(options);
   const rotations = [];
+  const fieldCount = clampNumber(Number(options.fields) || 1, 1, 20, 1);
   for (let rotationIndex = 0; rotationIndex < targetRotations; rotationIndex += 1) {
     const matches = [];
     const byes = [];
@@ -968,13 +1778,20 @@ function generateRotatingTeamsSchedule(teams, options) {
       });
       byes.push(...currentRotation.byes);
     });
-    rotations.push({
+    const waves = splitRotationIntoWaves({
       number: rotationIndex + 1,
       title: `Rotation ${rotationIndex + 1}`,
       phase: 'rotating-teams',
       matches,
       byes,
       byeAssignments: assignRolesForByes(byes, enabledRoles),
+    }, fieldCount, enabledRoles);
+    waves.forEach(wave => {
+      rotations.push({
+        ...wave,
+        number: rotations.length + 1,
+        title: `Rotation ${rotations.length + 1}`,
+      });
     });
   }
   const players = [];
@@ -1009,35 +1826,37 @@ function generateRotatingTeamsSchedule(teams, options) {
       durationMinutes: Number(options.duration || 7),
     },
   };
+  validateRotationCapacity(schedule.rotations, fieldCount, 'rotating-teams');
+  schedule.rotations.forEach(rotation => validateRotationRoles(rotation, 'rotating-teams'));
   validateRotatingSchedule(schedule);
   return schedule;
 }
 
 function generateSchedule(teams, options) {
   const format = getTournamentType(options);
+  let schedule;
   if (format === 'round-robin') {
-    return buildSinglePoolSchedule(teams, options);
-  }
-  if (format === 'groups-finals') {
+    schedule = buildSinglePoolSchedule(teams, options);
+  } else if (format === 'groups-finals') {
     const groups = distributeIntoGroups(teams, { finals: true, targetGroups: 2 });
-    return buildGroupedSchedule(groups, teams, options, { finals: true });
+    schedule = buildGroupedSchedule(groups, teams, options, { finals: true });
+  } else if (format === 'groups-pools') {
+    schedule = buildGroupPoolsRaquetteSchedule(teams, options);
+  } else if (format === 'rotating-teams') {
+    schedule = generateRotatingTeamsSchedule(teams, options);
+  } else if (format === 'ladder') {
+    schedule = buildLadderSchedule(teams, options);
+  } else if (format === 'swiss') {
+    schedule = initializeSwissMode(teams, options);
+  } else if (format === 'challenge') {
+    schedule = buildChallengeBoard(teams, options);
+  } else {
+    schedule = buildSinglePoolSchedule(teams, options);
   }
-  if (format === 'groups-pools') {
-    return buildGroupPoolsRaquetteSchedule(teams, options);
-  }
-  if (format === 'rotating-teams') {
-    return generateRotatingTeamsSchedule(teams, options);
-  }
-  if (format === 'ladder') {
-    return buildLadderSchedule(teams, options);
-  }
-  if (format === 'swiss') {
-    return initializeSwissMode(teams, options);
-  }
-  if (format === 'challenge') {
-    return buildChallengeBoard(teams, options);
-  }
-  return buildSinglePoolSchedule(teams, options);
+  ensureStableMatchIds(schedule);
+  validateUniqueMatchIds(schedule);
+  validateTournamentSchedule(schedule, options);
+  return schedule;
 }
 
 /* === Sauvegarde et restauration === */
@@ -1163,6 +1982,11 @@ function buildAppSaveSnapshot(session = state.currentSession) {
     scores: structuredClone(session.scores),
     currentRotation: session.currentRotation,
     options: { ...session.options },
+    timer: {
+      totalSeconds: Number(state.timer?.totalSeconds) || ((session.options?.duration || 7) * 60),
+      remainingSeconds: Number(state.timer?.remainingSeconds) || ((session.options?.duration || 7) * 60),
+      running: Boolean(state.timer?.running),
+    },
     completed: Boolean(session.completed),
     createdAt: session.createdAt,
     classroomId: session.classroomId || null,
@@ -1210,26 +2034,35 @@ function getCurrentRotation(session = state.currentSession, index = session?.cur
 function getScoreRecord(session, matchId) {
   const record = session?.scores?.[matchId];
   if (!record) return null;
-  if (record.confirmed === true) return record;
-  if (Number.isFinite(record.home) && Number.isFinite(record.away)) {
-    return {
-      ...record,
-      confirmed: true,
-    };
+  return typeof record === 'object' ? record : null;
+}
+
+function isMatchResultValidated(record, matchId = '') {
+  if (!record || typeof record !== 'object') return false;
+  const hasScores = Number.isFinite(record.home) && Number.isFinite(record.away);
+  const isValidated = record.confirmed === true || record.validated === true;
+  if (hasScores && !isValidated) {
+    console.warn(`[scoreValidation] Score présent sans validation explicite${matchId ? ` pour ${matchId}` : ''}.`);
+    return false;
   }
-  return null;
+  return hasScores && isValidated;
 }
 
 function isScoreComplete(record) {
-  return Boolean(record && record.confirmed === true && Number.isFinite(record.home) && Number.isFinite(record.away));
+  return isMatchResultValidated(record);
 }
 
 function createExplicitScoreRecord(home, away) {
-  return {
+  const record = {
     home: Math.max(0, Number(home) || 0),
     away: Math.max(0, Number(away) || 0),
     confirmed: true,
+    validated: true,
   };
+  if (record.confirmed !== true && record.validated !== true) {
+    console.warn('[scoreValidation] Écriture d’un score sans validation explicite.');
+  }
+  return record;
 }
 
 function compareStandingsRows(left, right) {
@@ -1819,7 +2652,15 @@ async function launchTournament() {
 /* === Vue 4 — pilotage live === */
 
 function getSessionCurrentRotationCount(session) {
-  return session?.schedule?.meta?.rotationCount || session?.schedule?.rotations?.length || 0;
+  const rotationsLength = session?.schedule?.rotations?.length || 0;
+  const metaCount = session?.schedule?.meta?.rotationCount || 0;
+  if (session?.format === 'swiss' || session?.format === 'ladder') {
+    if (metaCount && metaCount !== rotationsLength) {
+      console.warn(`[getSessionCurrentRotationCount] ${session.format} utilise ${rotationsLength} rotation(s) navigable(s), meta.rotationCount=${metaCount}.`);
+    }
+    return rotationsLength;
+  }
+  return metaCount || rotationsLength || 0;
 }
 
 function resetTimer() {
@@ -2383,85 +3224,132 @@ function appendNextLadderRotation(session) {
 
   const arbitratedResults = results.filter(r => r.hasReferee);
   const freeResults = results.filter(r => !r.hasReferee);
-  const nextSlots = [];
+  let nextSlots = [];
 
-  for (let i = 0; i < arbitratedResults.length; i++) {
-    const curr = arbitratedResults[i];
-    const above = i > 0 ? arbitratedResults[i - 1] : null;
-    const below = i < arbitratedResults.length - 1 ? arbitratedResults[i + 1] : null;
-    const isTop = i === 0;
-    const isBottom = i === arbitratedResults.length - 1;
+  if (!useReferees) {
+    for (let index = 0; index < freeResults.length; index += 1) {
+      const curr = freeResults[index];
+      const above = index > 0 ? freeResults[index - 1] : null;
+      const below = index < freeResults.length - 1 ? freeResults[index + 1] : null;
+      const isTop = index === 0;
+      const isBottom = index === freeResults.length - 1;
 
-    if (curr.draw) {
+      if (curr.draw || !curr.winner || !curr.loser) {
+        nextSlots.push({
+          field: curr.field,
+          home: curr.home,
+          away: curr.away,
+          referee: null,
+          hasReferee: false,
+        });
+        continue;
+      }
+
+      if (freeResults.length === 1) {
+        nextSlots.push({
+          field: curr.field,
+          home: curr.winner,
+          away: curr.loser,
+          referee: null,
+          hasReferee: false,
+        });
+        continue;
+      }
+
       nextSlots.push({
         field: curr.field,
-        home: curr.home,
-        away: curr.away,
-        referee: curr.referee,
-        hasReferee: true,
-      });
-      continue;
-    }
-
-    const nextReferee = isTop
-      ? curr.winner
-      : (below && !below.draw ? below.winner : null);
-    const nextHome = curr.referee;
-    const nextAway = isTop
-      ? (below && !below.draw ? below.winner : null)
-      : (above && !above.draw ? above.loser : null);
-
-    nextSlots.push({
-      field: curr.field,
-      home: nextHome || null,
-      away: nextAway || null,
-      referee: nextReferee || null,
-      hasReferee: true,
-    });
-  }
-
-  for (let j = 0; j < freeResults.length; j++) {
-    const curr = freeResults[j];
-    const prevFree = j > 0 ? freeResults[j - 1] : null;
-
-    if (curr.draw) {
-      nextSlots.push({
-        field: curr.field,
-        home: curr.home,
-        away: curr.away,
+        home: isTop
+          ? curr.winner
+          : (above && !above.draw && above.loser ? above.loser : curr.home),
+        away: isBottom
+          ? curr.loser
+          : (below && !below.draw && below.winner ? below.winner : curr.away),
         referee: null,
         hasReferee: false,
       });
-      continue;
+    }
+  } else {
+    // === CONSTRUCTION DES SLOTS ARBITRÉS — logique ±1 stricte ===
+    for (let i = 0; i < arbitratedResults.length; i++) {
+      const curr = arbitratedResults[i];
+      const above = i > 0 ? arbitratedResults[i - 1] : null;
+      const below = i < arbitratedResults.length - 1 ? arbitratedResults[i + 1] : null;
+      const isTop = i === 0;
+
+      if (curr.draw) {
+        nextSlots.push({
+          field: curr.field,
+          home: curr.home,
+          away: curr.away,
+          referee: curr.referee,
+          hasReferee: true,
+        });
+        continue;
+      }
+
+      const nextReferee = isTop
+        ? curr.winner
+        : (below && !below.draw ? below.winner : null);
+      const nextHome = curr.referee;
+      const nextAway = isTop
+        ? (below && !below.draw ? below.winner : null)
+        : (above && !above.draw ? above.loser : null);
+
+      nextSlots.push({
+        field: curr.field,
+        home: nextHome || null,
+        away: nextAway || null,
+        referee: nextReferee || null,
+        hasReferee: true,
+      });
     }
 
-    nextSlots.push({
-      field: curr.field,
-      home: curr.referee || null,
-      away: curr.loser,
-      referee: null,
-      hasReferee: false,
-    });
-  }
+    // === TERRAINS LIBRES (sans arbitre) — logique inchangée ===
+    for (let j = 0; j < freeResults.length; j++) {
+      const curr = freeResults[j];
 
-  for (let i = 1; i < arbitratedResults.length; i++) {
-    const gagnant = arbitratedResults[i].draw ? null : arbitratedResults[i].winner;
-    if (!gagnant) continue;
-    const slotCible = nextSlots[i - 1];
-    if (slotCible && slotCible.home === null) {
-      slotCible.home = gagnant;
+      if (curr.draw) {
+        nextSlots.push({
+          field: curr.field,
+          home: curr.home,
+          away: curr.away,
+          referee: null,
+          hasReferee: false,
+        });
+        continue;
+      }
+
+      nextSlots.push({
+        field: curr.field,
+        home: curr.referee || null,
+        away: curr.loser,
+        referee: null,
+        hasReferee: false,
+      });
+    }
+
+    // Propagation des gagnants dans la chaîne arbitrée (terrain i+1 → terrain i)
+    for (let i = 1; i < arbitratedResults.length; i++) {
+      const gagnant = arbitratedResults[i].draw ? null : arbitratedResults[i].winner;
+      if (!gagnant) continue;
+      const slotCible = nextSlots[i - 1];
+      if (slotCible && slotCible.home === null) {
+        slotCible.home = gagnant;
+      }
+    }
+
+    // Propagation indépendante pour les terrains libres
+    for (let j = 1; j < freeResults.length; j++) {
+      const gagnant = freeResults[j].draw ? null : freeResults[j].winner;
+      if (!gagnant) continue;
+      const slotCible = nextSlots[arbitratedResults.length + j - 1];
+      if (slotCible && slotCible.home === null) {
+        slotCible.home = gagnant;
+      }
     }
   }
 
-  for (let j = 1; j < freeResults.length; j++) {
-    const gagnant = freeResults[j].draw ? null : freeResults[j].winner;
-    if (!gagnant) continue;
-    const slotCible = nextSlots[arbitratedResults.length + j - 1];
-    if (slotCible && slotCible.home === null) {
-      slotCible.home = gagnant;
-    }
-  }
-
+  // === REMPLISSAGE DES NULL PAR LE BENCH ===
   const usedSoFar = new Set(
     nextSlots.flatMap(s => [s.home, s.away, s.referee].filter(Boolean))
   );
@@ -2483,21 +3371,10 @@ function appendNextLadderRotation(session) {
     }
   }
 
-  if (typeof console !== 'undefined') {
-    const prevFieldMap = {};
-    for (const slot of currentSlots) {
-      if (slot.home) prevFieldMap[slot.home] = slot.field;
-      if (slot.away) prevFieldMap[slot.away] = slot.field;
-      if (slot.referee) prevFieldMap[slot.referee] = slot.field;
-    }
-    for (const slot of nextSlots) {
-      for (const name of [slot.home, slot.away, slot.referee].filter(Boolean)) {
-        const prev = prevFieldMap[name];
-        if (prev !== undefined && Math.abs(slot.field - prev) > 1) {
-          console.warn(`[LADDER ±1 VIOLATION] ${name} : T${prev} → T${slot.field}`);
-        }
-      }
-    }
+  const ladderMovement = validateLadderMovement({ ladderSlots: currentSlots }, nextSlots);
+  if (!ladderMovement.valid) {
+    console.warn(`[validateLadderMovement] correction appliquée : ${ladderMovement.violations.map(entry => `${entry.name} T${entry.from}->T${entry.to}`).join(', ')}`);
+    nextSlots = currentSlots.map(slot => ({ ...slot }));
   }
 
   const usedFinal = new Set(
@@ -2548,6 +3425,9 @@ function appendNextLadderRotation(session) {
   session.schedule.ladder.latestOrder = newOrder;
   session.schedule.rotations.push(nextRotation);
   session.schedule.meta.matchCount += matches.length;
+  ensureStableMatchIds(session.schedule);
+  validateUniqueMatchIds(session.schedule);
+  validateTournamentSchedule(session.schedule, { ...session.options, scores: session.scores });
   return true;
 }
 
@@ -2592,9 +3472,15 @@ function appendNextSwissRotation(session) {
     id: match.bye ? `swiss-bye-${swiss.round}-${match.p1Id}` : `swiss-${swiss.round}-${index + 1}`,
   }));
   const playerMap = new Map(swiss.players.map(player => [player.id, player]));
-  session.schedule.rotations.push(buildSwissRotation(swiss.round, swiss.currentMatches, playerMap, session.options));
+  const newRotations = splitRotationIntoWaves(buildSwissRotation(swiss.round, swiss.currentMatches, playerMap, session.options), session.options.fields, getEnabledRolesFromOptions(session.options));
+  validateRotationCapacity(newRotations, session.options.fields, 'swiss');
+  newRotations.forEach(rotation => validateRotationRoles(rotation, 'swiss'));
+  session.schedule.rotations.push(...newRotations);
   session.schedule.meta.rotationCount = swiss.maxRounds;
   session.schedule.meta.matchCount += swiss.currentMatches.filter(match => !match.bye).length;
+  ensureStableMatchIds(session.schedule);
+  validateUniqueMatchIds(session.schedule);
+  validateTournamentSchedule(session.schedule, { ...session.options, scores: session.scores });
   return true;
 }
 
@@ -3102,6 +3988,27 @@ function restoreSession(sessionId, targetView = 'live') {
   const snapshot = getSessionById(sessionId);
   if (!snapshot) return;
   state.currentSession = structuredClone(snapshot);
+  if (!state.currentSession?.schedule || !Array.isArray(state.currentSession.schedule.rotations)) {
+    console.error(`[restoreSession] Séance ${sessionId} invalide : planning absent ou corrompu.`);
+    return;
+  }
+  ensureStableMatchIds(state.currentSession.schedule);
+  validateUniqueMatchIds(state.currentSession.schedule);
+  const maxRotationIndex = Math.max(0, (state.currentSession.schedule.rotations?.length || 1) - 1);
+  const restoredRotation = Number(state.currentSession.currentRotation);
+  state.currentSession.currentRotation = Number.isInteger(restoredRotation)
+    ? Math.min(Math.max(restoredRotation, 0), maxRotationIndex)
+    : 0;
+  if (restoredRotation !== state.currentSession.currentRotation) {
+    console.warn(`[restoreSession] currentRotation incohérent pour ${sessionId}, valeur corrigée à ${state.currentSession.currentRotation}.`);
+  }
+  const knownMatchIds = new Set(state.currentSession.schedule.rotations.flatMap(rotation => (rotation.matches || []).map(match => match.id).filter(Boolean)));
+  Object.keys(state.currentSession.scores || {}).forEach(matchId => {
+    if (!knownMatchIds.has(matchId)) {
+      console.warn(`[restoreSession] Score restauré sans match correspondant : ${matchId}.`);
+    }
+  });
+  validateTournamentSchedule(state.currentSession.schedule, { ...(state.currentSession.options || {}), scores: state.currentSession.scores });
   if (state.currentSession.format === 'challenge') {
     if (!state.currentSession.challengeOrder) {
       state.currentSession.challengeOrder = state.currentSession.schedule.teams.map(t => t.name);
@@ -3111,7 +4018,20 @@ function restoreSession(sessionId, targetView = 'live') {
     }
   }
   state.lastStatsSessionId = snapshot.id;
-  resetTimer();
+  clearInterval(runtime.timerInterval);
+  runtime.timerInterval = null;
+  if (snapshot.timer && typeof snapshot.timer === 'object') {
+    const fallbackSeconds = (state.currentSession?.options?.duration || 7) * 60;
+    const totalSeconds = Math.max(1, Number(snapshot.timer.totalSeconds) || fallbackSeconds);
+    const remainingSeconds = Math.min(totalSeconds, Math.max(0, Number(snapshot.timer.remainingSeconds)));
+    state.timer.totalSeconds = totalSeconds;
+    state.timer.remainingSeconds = Number.isFinite(remainingSeconds) ? remainingSeconds : totalSeconds;
+    state.timer.running = false;
+    renderTimer();
+    persistState();
+  } else {
+    resetTimer();
+  }
   if (targetView === 'summary' || snapshot.completed) {
     showView('summary');
   } else {
@@ -3546,6 +4466,10 @@ function init() {
     resetTimer();
   }
   showView(state.view);
+}
+
+if (typeof window !== 'undefined') {
+  window.runScheduleStressAudit = runScheduleStressAudit;
 }
 
 document.addEventListener('DOMContentLoaded', init);
