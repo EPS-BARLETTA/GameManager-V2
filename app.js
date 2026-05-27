@@ -168,6 +168,29 @@ function assignRolesForByes(byeList, enabledRoles) {
   }));
 }
 
+function assignLadderByeAssignments(byeList, options = {}) {
+  const names = Array.isArray(byeList) ? byeList.filter(Boolean) : [];
+  if (!names.length) return [];
+  if (!options.rotatingReferee) {
+    return assignRolesForByes(names, getEnabledRolesFromOptions(options));
+  }
+  const assignments = [];
+  const remaining = [...names];
+  if (options.scoreTable && remaining.length) {
+    assignments.push({
+      name: remaining.shift(),
+      role: 'Table',
+    });
+  }
+  return [
+    ...assignments,
+    ...remaining.map(name => ({
+      name,
+      role: 'Spectateur actif',
+    })),
+  ];
+}
+
 function getSuggestedTeamConfigurations(studentCount) {
   const safeCount = clampSetupCount(studentCount, 24);
   return Array.from({ length: 7 }, (_, offset) => offset + 2)
@@ -593,6 +616,10 @@ function validateTournamentSchedule(schedule, options = {}) {
     .map(entry => typeof entry === 'string' ? entry : entry?.name)
     .filter(Boolean);
   const enabledRoles = getEnabledRolesFromOptions(options);
+  const unavailableRoleRotations = {
+    Arbitre: [],
+    Table: [],
+  };
   const knownMatchIds = new Set(schedule.rotations.flatMap(rotation => (rotation.matches || []).map(match => match.id).filter(Boolean)));
   Object.entries(options.scores || {}).forEach(([matchId, record]) => {
     if (!knownMatchIds.has(matchId)) {
@@ -706,13 +733,14 @@ function validateTournamentSchedule(schedule, options = {}) {
     if (enabledRoles.includes('Arbitre')) {
       const hasReferee = matches.some(match => match.referee || match.ladderReferee) || (rotation.byeAssignments || []).some(entry => entry.role === 'Arbitre');
       if (!hasReferee) {
-        result.warnings.push(`${label} n'a pas d'arbitre disponible.`);
+        unavailableRoleRotations.Arbitre.push(rotationIndex + 1);
       }
     }
     if (enabledRoles.includes('Table')) {
       const hasTable = (rotation.byeAssignments || []).some(entry => entry.role === 'Table');
-      if (!hasTable) {
-        result.warnings.push(`${label} n'a pas de table disponible.`);
+      const canProvideTable = schedule.format !== 'ladder' || (Array.isArray(rotation.byes) && rotation.byes.length > 0);
+      if (!hasTable && canProvideTable) {
+        unavailableRoleRotations.Table.push(rotationIndex + 1);
       }
     }
     const roleCounts = validateRotationRoles(rotation, schedule.format || '');
@@ -724,6 +752,15 @@ function validateTournamentSchedule(schedule, options = {}) {
       result.valid = false;
     }
   });
+  Object.entries(unavailableRoleRotations).forEach(([role, rotations]) => {
+    if (!rotations.length) return;
+    const listedRotations = rotations.length <= 6
+      ? rotations.join(', ')
+      : `${rotations.slice(0, 6).join(', ')}, …`;
+    result.warnings.push(
+      `${schedule.format} : ${role} non attribuable sur ${rotations.length} rotation(s) (${listedRotations}) : aucun participant inactif disponible pour ce rôle.`
+    );
+  });
   const fairness = validateParticipationFairness(schedule, allParticipants, options);
   result.warnings.push(...fairness.warnings);
   if (!result.valid) {
@@ -733,6 +770,13 @@ function validateTournamentSchedule(schedule, options = {}) {
     console.warn(`[validateTournamentSchedule] Warnings : ${result.warnings.join(' | ')}`);
   }
   return result;
+}
+
+function syncDynamicRotationCount(schedule) {
+  if (!schedule?.meta || !Array.isArray(schedule.rotations)) return;
+  if (schedule.format === 'swiss' || schedule.format === 'ladder') {
+    schedule.meta.rotationCount = schedule.rotations.length;
+  }
 }
 
 function runScheduleStressAudit(config = {}) {
@@ -982,12 +1026,6 @@ function splitRotationIntoWaves(rotation, fieldCount, enabledRoles = null) {
     });
     const remainingCandidates = waveByes.filter(name => !preservedNames.has(name));
     const generatedAssignments = assignRolesForByes(remainingCandidates, inferredRoles);
-    if (inferredRoles.includes('Arbitre') && ![...preservedAssignments, ...generatedAssignments].some(entry => entry.role === 'Arbitre')) {
-      console.warn(`[splitRotationIntoWaves] ${rotation.title || 'Rotation'} n'a aucun arbitre disponible sur cette vague.`);
-    }
-    if (inferredRoles.includes('Table') && ![...preservedAssignments, ...generatedAssignments].some(entry => entry.role === 'Table')) {
-      console.warn(`[splitRotationIntoWaves] ${rotation.title || 'Rotation'} n'a aucune table disponible sur cette vague.`);
-    }
     const wave = {
       ...rotation,
       matches: slice.map((match, index) => ({ ...match, field: index + 1 })),
@@ -1315,7 +1353,10 @@ function buildGroupPoolsRaquetteSchedule(teams, options) {
     const byes = [];
     groupedRounds.forEach(group => {
       const round = group.rounds[roundIndex];
-      if (!round) return;
+      if (!round) {
+        group.teams.forEach(team => byes.push(team));
+        return;
+      }
       round.matches.forEach(match => {
         matches.push({
           ...match,
@@ -1326,20 +1367,75 @@ function buildGroupPoolsRaquetteSchedule(teams, options) {
       });
       round.byes.forEach(name => byes.push(name));
     });
+    const embeddedReferees = new Set(matches.map(match => match.referee).filter(Boolean));
     entries.push({
       phase: 'groups-pools',
       title: `Rotation ${entries.length + 1}`,
       matches,
       byes,
-      byeAssignments: assignRolesForByes(byes, enabledRoles),
+      byeAssignments: assignRolesForByes(byes.filter(name => !embeddedReferees.has(name)), enabledRoles),
     });
   }
-  return assembleSchedule(entries, teams, options, {
+  const fieldCount = clampNumber(Number(options.fields) || 1, 1, 20, 1);
+  const rotations = [];
+  let rotationNumber = 1;
+  let totalMatches = 0;
+  let clock = parseTime(options.startTime);
+  entries.forEach(entry => {
+    const waves = splitRotationIntoWaves({
+      number: rotationNumber,
+      title: entry.title || `Rotation ${rotationNumber}`,
+      phase: entry.phase,
+      groupId: entry.groupId || null,
+      groupLabel: entry.groupLabel || null,
+      matches: entry.matches.map(match => ({ ...match })),
+      byes: [...(entry.byes || [])],
+      byeAssignments: Array.isArray(entry.byeAssignments) ? structuredClone(entry.byeAssignments) : [],
+    }, fieldCount, enabledRoles);
+    waves.forEach(wave => {
+      const startLabel = clock == null ? '' : formatTimeLabel(clock);
+      const endLabel = clock == null ? '' : formatTimeLabel(clock + Number(options.duration || 7));
+      const preparedMatches = (wave.matches || []).map((match, matchIndex) => {
+        totalMatches += 1;
+        return {
+          ...match,
+          field: match.field || matchIndex + 1,
+          phase: match.phase || 'groups-pools',
+          groupId: match.groupId || entry.groupId || null,
+          groupLabel: match.groupLabel || entry.groupLabel || null,
+        };
+      });
+      rotations.push({
+        ...wave,
+        number: rotationNumber,
+        title: wave.title || `Rotation ${rotationNumber}`,
+        startLabel,
+        endLabel,
+        matches: preparedMatches,
+      });
+      rotationNumber += 1;
+      if (clock != null) {
+        clock += Number(options.duration || 7);
+      }
+    });
+  });
+  return {
     format: 'groups-pools',
-    formatLabel: TOURNAMENT_MODES['groups-pools'].label,
+    rotations,
+    teams: teams.map(name => ({ name })),
     groups,
     finals: null,
-  });
+    meta: {
+      format: 'groups-pools',
+      formatLabel: TOURNAMENT_MODES['groups-pools'].label,
+      teamCount: teams.length,
+      matchCount: totalMatches,
+      fieldCount,
+      rotationCount: rotations.length,
+      practiceType: options.practiceType,
+      durationMinutes: Number(options.duration || 7),
+    },
+  };
 }
 
 function buildLadderRotation(order, rotationNumber, options) {
@@ -1428,8 +1524,7 @@ function buildLadderRotation(order, rotationNumber, options) {
     ...(slot.referee ? { ladderReferee: slot.referee } : {}),
   }));
 
-  const enabledRoles = getEnabledRolesFromOptions(options);
-  const byeAssignments = assignRolesForByes(byes, enabledRoles);
+  const byeAssignments = assignLadderByeAssignments(byes, options);
 
   return {
     number: rotationNumber,
@@ -1464,7 +1559,7 @@ function buildLadderSchedule(teams, options) {
       teamCount: teams.length,
       matchCount: firstRotation.matches.length,
       fieldCount: clampNumber(Number(options.fields) || 1, 1, 20, 1),
-      rotationCount: rotationTarget,
+      rotationCount: 1,
       practiceType: options.practiceType,
       durationMinutes: Number(options.duration || 7),
     },
@@ -1640,7 +1735,7 @@ function initializeSwissMode(teams, options) {
       teamCount: teams.length,
       matchCount: currentMatches.filter(match => !match.bye).length,
       fieldCount: clampNumber(Number(options.fields) || 1, 1, 20, 1),
-      rotationCount: maxRounds,
+      rotationCount: rotations.length,
       practiceType: options.practiceType,
       durationMinutes: Number(options.duration || 7),
     },
@@ -3227,47 +3322,84 @@ function appendNextLadderRotation(session) {
   let nextSlots = [];
 
   if (!useReferees) {
-    for (let index = 0; index < freeResults.length; index += 1) {
-      const curr = freeResults[index];
-      const above = index > 0 ? freeResults[index - 1] : null;
-      const below = index < freeResults.length - 1 ? freeResults[index + 1] : null;
-      const isTop = index === 0;
-      const isBottom = index === freeResults.length - 1;
+    const slotBuffer = Array(freeResults.length).fill(null);
+    let segmentStart = 0;
 
-      if (curr.draw || !curr.winner || !curr.loser) {
-        nextSlots.push({
+    while (segmentStart < freeResults.length) {
+      if (freeResults[segmentStart].draw || !freeResults[segmentStart].winner || !freeResults[segmentStart].loser) {
+        const curr = freeResults[segmentStart];
+        slotBuffer[segmentStart] = {
           field: curr.field,
           home: curr.home,
           away: curr.away,
           referee: null,
           hasReferee: false,
-        });
+        };
+        segmentStart += 1;
         continue;
       }
 
-      if (freeResults.length === 1) {
-        nextSlots.push({
+      let segmentEnd = segmentStart;
+      while (
+        segmentEnd + 1 < freeResults.length
+        && !freeResults[segmentEnd + 1].draw
+        && freeResults[segmentEnd + 1].winner
+        && freeResults[segmentEnd + 1].loser
+      ) {
+        segmentEnd += 1;
+      }
+
+      for (let index = segmentStart; index <= segmentEnd; index += 1) {
+        const curr = freeResults[index];
+        const localIndex = index - segmentStart;
+        const segmentLength = segmentEnd - segmentStart + 1;
+
+        if (segmentLength === 1) {
+          slotBuffer[index] = {
+            field: curr.field,
+            home: curr.winner,
+            away: curr.loser,
+            referee: null,
+            hasReferee: false,
+          };
+          continue;
+        }
+
+        if (localIndex === 0) {
+          slotBuffer[index] = {
+            field: curr.field,
+            home: curr.winner,
+            away: freeResults[index + 1].winner,
+            referee: null,
+            hasReferee: false,
+          };
+          continue;
+        }
+
+        if (localIndex === segmentLength - 1) {
+          slotBuffer[index] = {
+            field: curr.field,
+            home: freeResults[index - 1].loser,
+            away: curr.loser,
+            referee: null,
+            hasReferee: false,
+          };
+          continue;
+        }
+
+        slotBuffer[index] = {
           field: curr.field,
-          home: curr.winner,
-          away: curr.loser,
+          home: freeResults[index - 1].loser,
+          away: freeResults[index + 1].winner,
           referee: null,
           hasReferee: false,
-        });
-        continue;
+        };
       }
 
-      nextSlots.push({
-        field: curr.field,
-        home: isTop
-          ? curr.winner
-          : (above && !above.draw && above.loser ? above.loser : curr.home),
-        away: isBottom
-          ? curr.loser
-          : (below && !below.draw && below.winner ? below.winner : curr.away),
-        referee: null,
-        hasReferee: false,
-      });
+      segmentStart = segmentEnd + 1;
     }
+
+    nextSlots = slotBuffer.filter(Boolean);
   } else {
     // === CONSTRUCTION DES SLOTS ARBITRÉS — logique ±1 stricte ===
     for (let i = 0; i < arbitratedResults.length; i++) {
@@ -3289,11 +3421,11 @@ function appendNextLadderRotation(session) {
 
       const nextReferee = isTop
         ? curr.winner
-        : (below && !below.draw ? below.winner : null);
+        : (below && !below.draw ? below.winner : (curr.loser || curr.away || curr.referee || null));
       const nextHome = curr.referee;
       const nextAway = isTop
-        ? (below && !below.draw ? below.winner : null)
-        : (above && !above.draw ? above.loser : null);
+        ? (below && !below.draw ? below.winner : (curr.loser || curr.away || null))
+        : (above && !above.draw ? above.loser : (curr.winner || curr.home || null));
 
       nextSlots.push({
         field: curr.field,
@@ -3389,7 +3521,7 @@ function appendNextLadderRotation(session) {
 
   const enabledRoles = getEnabledRolesFromOptions(session.options);
   const byeAssignments = useReferees
-    ? newBench.map(name => ({ name, role: 'Spectateur actif' }))
+    ? assignLadderByeAssignments(newBench, session.options)
     : assignRolesForByes(newBench, enabledRoles);
 
   const matches = nextSlots
@@ -3424,6 +3556,7 @@ function appendNextLadderRotation(session) {
   session.schedule.ladder.currentSlots = nextSlots;
   session.schedule.ladder.latestOrder = newOrder;
   session.schedule.rotations.push(nextRotation);
+  syncDynamicRotationCount(session.schedule);
   session.schedule.meta.matchCount += matches.length;
   ensureStableMatchIds(session.schedule);
   validateUniqueMatchIds(session.schedule);
@@ -3476,7 +3609,7 @@ function appendNextSwissRotation(session) {
   validateRotationCapacity(newRotations, session.options.fields, 'swiss');
   newRotations.forEach(rotation => validateRotationRoles(rotation, 'swiss'));
   session.schedule.rotations.push(...newRotations);
-  session.schedule.meta.rotationCount = swiss.maxRounds;
+  syncDynamicRotationCount(session.schedule);
   session.schedule.meta.matchCount += swiss.currentMatches.filter(match => !match.bye).length;
   ensureStableMatchIds(session.schedule);
   validateUniqueMatchIds(session.schedule);
@@ -3992,6 +4125,7 @@ function restoreSession(sessionId, targetView = 'live') {
     console.error(`[restoreSession] Séance ${sessionId} invalide : planning absent ou corrompu.`);
     return;
   }
+  syncDynamicRotationCount(state.currentSession.schedule);
   ensureStableMatchIds(state.currentSession.schedule);
   validateUniqueMatchIds(state.currentSession.schedule);
   const maxRotationIndex = Math.max(0, (state.currentSession.schedule.rotations?.length || 1) - 1);
